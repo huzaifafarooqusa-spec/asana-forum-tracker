@@ -2,7 +2,7 @@ name: Asana Forum Monitor
 
 on:
   schedule:
-    # Runs every 5 minutes (or as frequently as GitHub schedules)
+    # Every 5 minutes (GitHub may delay or skip scheduled runs under load)
     - cron: '*/5 * * * *'
   workflow_dispatch: # Allows manual trigger from GitHub UI
 
@@ -16,27 +16,61 @@ concurrency:
 jobs:
   check-and-notify:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
-      - name: Checkout repository
+      - name: Checkout code
         uses: actions/checkout@v4
+
+      # State lives on its own branch so bot commits never touch main
+      - name: Checkout state branch
+        uses: actions/checkout@v4
+        with:
+          ref: state
+          path: .state
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.12'
+
+      - name: Install Claude SDK (only if drafts are enabled)
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -n "$ANTHROPIC_API_KEY" ]; then pip install -q anthropic; fi
 
       - name: Run Tracker
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          STATE_FILE: .state/state.json
+          # Optional overrides (repo Settings → Variables)
+          WATCH_CATEGORIES: ${{ vars.WATCH_CATEGORIES }}
+          KEYWORDS: ${{ vars.KEYWORDS }}
+          ONLY_PRIORITY: ${{ vars.ONLY_PRIORITY }}
+          DRAFT_MODE: ${{ vars.DRAFT_MODE }}
         run: python tracker.py
 
-      - name: Commit and push cache updates
+      - name: Persist state
+        if: always()
+        working-directory: .state
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add seen_topics.txt
-          git commit -m "Auto-update seen topics cache" || echo "No changes to commit"
-          git pull --rebase origin main || true
-          git push origin main || echo "No changes to push"
+          git add state.json
+          if git diff --cached --quiet; then echo "No state changes"; exit 0; fi
+          git commit -m "Update tracker state"
+          git push origin HEAD:state
+
+      - name: Alert on failure
+        if: failure()
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          curl -sS -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${CHAT_ID}" \
+            --data-urlencode "text=❌ Asana forum tracker run failed: ${RUN_URL}"
