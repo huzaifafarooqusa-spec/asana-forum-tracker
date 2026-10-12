@@ -7,13 +7,15 @@ import html
 import urllib.request
 import urllib.error
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8995329698:AAH8t_4777maZKsC50TTaHIdEFimh5V8cmM")
-CHAT_ID = os.getenv("CHAT_ID", "714192775")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
+if not BOT_TOKEN or not CHAT_ID:
+    sys.exit("BOT_TOKEN and CHAT_ID environment variables are required")
 FORUM_URL = "https://forum.asana.com/c/forum-en/tips/6/l/latest.json"
 CACHE_FILE = os.path.join(os.path.dirname(__file__), "seen_topics.txt")
 HEADERS = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AsanaTracker/1.0"}
 
-ssl_ctx = ssl._create_unverified_context()
+ssl_ctx = ssl.create_default_context()
 
 def load_seen_topics():
     if os.path.exists(CACHE_FILE):
@@ -28,6 +30,7 @@ def save_seen_topics(seen_ids):
             f.write(f"{tid}\n")
 
 def send_telegram_alert(title, url, excerpt=None):
+    """Return True if Telegram accepted the message."""
     # Use HTML formatting to prevent Telegram Markdown parsing errors with characters like _, *, [
     safe_title = html.escape(title)
     safe_url = html.escape(url)
@@ -60,8 +63,10 @@ def send_telegram_alert(title, url, excerpt=None):
         with urllib.request.urlopen(req, timeout=15, context=ssl_ctx) as resp:
             if resp.status == 200:
                 print(f"✅ Notification sent to Telegram: {title}")
+                return True
     except Exception as e:
         print(f"❌ Telegram send error: {e}")
+    return False
 
 def check_forum():
     seen_ids = load_seen_topics()
@@ -88,8 +93,6 @@ def check_forum():
                 continue
 
             if topic_id not in seen_ids:
-                new_topics_found += 1
-                current_batch_ids.add(topic_id)
 
                 title = topic.get("title", "Untitled Question")
                 slug = topic.get("slug", "topic")
@@ -97,7 +100,10 @@ def check_forum():
                 excerpt = topic.get("excerpt", "")
 
                 print(f"🔍 Naya topic mil gaya: {title}")
-                send_telegram_alert(title, topic_url, excerpt)
+                # Only mark as seen if the alert was delivered, so failures retry next run
+                if send_telegram_alert(title, topic_url, excerpt):
+                    new_topics_found += 1
+                    current_batch_ids.add(topic_id)
                 time.sleep(0.5)  # Telegram rate limit safety
 
         save_seen_topics(current_batch_ids)
@@ -109,6 +115,8 @@ def check_forum():
 
     except Exception as e:
         print(f"❌ Error checking Asana forum: {e}")
+        return False
+    return True
 
 if __name__ == "__main__":
     if "--loop" in sys.argv:
@@ -117,4 +125,4 @@ if __name__ == "__main__":
             check_forum()
             time.sleep(60)
     else:
-        check_forum()
+        sys.exit(0 if check_forum() else 1)
