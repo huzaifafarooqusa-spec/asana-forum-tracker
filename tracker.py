@@ -3,6 +3,7 @@ import sys
 import time
 import json
 import ssl
+import html
 import urllib.request
 import urllib.error
 
@@ -21,27 +22,32 @@ def load_seen_topics():
     return set()
 
 def save_seen_topics(seen_ids):
+    # Keep up to the most recent 500 topics to prevent unbounded file growth
     with open(CACHE_FILE, "w") as f:
-        for tid in sorted(seen_ids):
+        for tid in sorted(seen_ids)[-500:]:
             f.write(f"{tid}\n")
 
 def send_telegram_alert(title, url, excerpt=None):
-    clean_title = title.replace("*", "").replace("_", "")
+    # Use HTML formatting to prevent Telegram Markdown parsing errors with characters like _, *, [
+    safe_title = html.escape(title)
+    safe_url = html.escape(url)
+
     message = (
-        f"🚨 *Naya Question Aya Asana Forum Par!*\n\n"
-        f"📌 *Title:* {clean_title}\n"
+        f"🚨 <b>Naya Question Aya Asana Forum Par!</b>\n\n"
+        f"📌 <b>Title:</b> {safe_title}\n"
     )
     if excerpt:
-        clean_excerpt = excerpt[:180].replace("*", "").replace("_", "").strip()
-        message += f"\n📝 *Summary:* {clean_excerpt}...\n"
+        clean_excerpt = excerpt[:180].strip()
+        safe_excerpt = html.escape(clean_excerpt)
+        message += f"\n📝 <b>Summary:</b> {safe_excerpt}...\n"
 
-    message += f"\n🔗 [Question Open Karein]({url})"
+    message += f'\n🔗 <a href="{safe_url}">Question Open Karein</a>'
 
     api_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = json.dumps({
         "chat_id": CHAT_ID,
         "text": message,
-        "parse_mode": "Markdown",
+        "parse_mode": "HTML",
         "disable_web_page_preview": False
     }).encode("utf-8")
 
@@ -92,6 +98,7 @@ def check_forum():
 
                 print(f"🔍 Naya topic mil gaya: {title}")
                 send_telegram_alert(title, topic_url, excerpt)
+                time.sleep(0.5)  # Telegram rate limit safety
 
         save_seen_topics(current_batch_ids)
 
