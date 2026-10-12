@@ -41,6 +41,25 @@ Other category ids: 20 Product Ideas, 61 Critical Bugs, 18 Product Announcements
 committed to the `state` branch so `main` history stays clean. GitHub's scheduler is best-effort,
 so runs can be late.
 
+**Reliable free 5-minute trigger (recommended):** GitHub's own cron is best-effort and can
+skip runs for hours. Use [cron-job.org](https://cron-job.org) (free, no card) to start the
+workflow instead:
+
+1. GitHub → Settings → Developer settings → **Fine-grained tokens** → Generate new token.
+   Repository access: only this repo. Permissions: **Actions → Read and write**, nothing else.
+   Expiration: 1 year (set a reminder to renew).
+2. cron-job.org → Create cronjob:
+   - URL: `https://api.github.com/repos/huzaifafarooqusa-spec/asana-forum-tracker/actions/workflows/tracker.yml/dispatches`
+   - Schedule: every 5 minutes
+   - Advanced → Request method `POST`, body `{"ref":"main"}`, headers:
+     `Authorization: Bearer <token>`, `Accept: application/vnd.github+json`,
+     `X-GitHub-Api-Version: 2022-11-28`
+3. Save. Job history should show HTTP **204** and a new run appears under Actions.
+
+Keep the repo **public**: Actions minutes are free there, while private repos get only 2,000
+minutes a month. The workflow's own schedule stays on as a backup, and the concurrency group
+stops overlapping runs from clashing.
+
 **Always-on:**
 
 ```bash
