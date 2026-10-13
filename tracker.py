@@ -12,11 +12,13 @@ Environment:
     WATCH_CATEGORIES        comma-separated Discourse category ids (default: see below)
     KEYWORDS                comma-separated priority keywords (default: see below)
     ONLY_PRIORITY           "1" to alert only on keyword matches (default: alert on all)
-    LLM_API_KEY             optional; enables AI reply drafts (free Gemini key by default)
-    LLM_BASE_URL            any OpenAI-compatible API (default: Google Gemini)
-    LLM_MODEL               comma-separated fallback list
-                            (default gemini-3.5-flash-lite,gemini-3.8-flash,gemini-3.6-flash)
+    OLLAMA_API_KEY          AI drafts via Ollama cloud (tried first)
+    OPENROUTER_API_KEY      AI drafts via OpenRouter free models (second)
+    LLM_API_KEY             AI drafts via Google Gemini (last)
+    OLLAMA_MODELS, OPENROUTER_MODELS, GEMINI_MODELS
+                            comma-separated model fallback lists (defaults below)
     DRAFT_MODE              "priority" (default), "all" or "off"
+    DRAFT_DAILY_LIMIT       max drafts per UTC day, protects free quotas (default 15)
 """
 import html
 import json
@@ -70,15 +72,28 @@ DEFAULT_KEYWORDS = [
     "consultant", "help me set up", "best way",
 ]
 
-# Default is Gemini, whose free tier covers a handful of drafts a day; with Gemini, drafts are
-# grounded in live Google Search results so facts can be checked against cited sources.
-# Any other OpenAI-compatible chat API also works (OpenRouter, Groq, a self-hosted OmniRoute...),
-# without search grounding. Flash-Lite first: fastest and least often overloaded.
-LLM_BASE_URL = (os.getenv("LLM_BASE_URL") or "https://generativelanguage.googleapis.com/v1beta/openai").rstrip("/")
-# Tried in order: free-tier models are often briefly overloaded (HTTP 503), so fall through
-LLM_MODELS = [m.strip() for m in (os.getenv("LLM_MODEL") or
-              "gemini-3.5-flash-lite,gemini-3.8-flash,gemini-3.6-flash").split(",") if m.strip()]
-LLM_MODEL = LLM_MODELS[0]
+# AI providers for drafts, tried in order; any provider whose key is set takes part. Each has
+# a model fallback list: a busy, rate-limited or quota-exhausted model moves on to the next
+# model, then the next provider, so one free tier running dry never stops drafts.
+PROVIDERS = [
+    {"name": "ollama", "key_env": "OLLAMA_API_KEY", "kind": "openai", "base": "https://ollama.com/v1",
+     "models_env": "OLLAMA_MODELS", "models": "gpt-oss:120b,gemma4:31b,gpt-oss:20b"},
+    {"name": "openrouter", "key_env": "OPENROUTER_API_KEY", "kind": "openai", "base": "https://openrouter.ai/api/v1",
+     "models_env": "OPENROUTER_MODELS",
+     "models": "nvidia/nemotron-3-ultra-550b-a55b:free,google/gemma-4-31b-it:free,nvidia/nemotron-3-super-120b-a12b:free"},
+    {"name": "gemini", "key_env": "LLM_API_KEY", "kind": "gemini", "base": None,
+     "models_env": "GEMINI_MODELS", "models": "gemini-3.5-flash-lite,gemini-3.8-flash,gemini-3.6-flash"},
+]
+
+
+def provider_models(p):
+    return [m.strip() for m in (os.getenv(p["models_env"]) or p["models"]).split(",") if m.strip()]
+
+
+def active_providers():
+    return [p for p in PROVIDERS if os.getenv(p["key_env"])]
+
+
 GEMINI_HOST = "generativelanguage.googleapis.com"
 DRAFT_SYSTEM = """You write reply drafts for the official Asana Community Forum (forum.asana.com) on \
 behalf of an experienced Asana consultant. A person reviews each draft, but it must be ready to post.
@@ -127,6 +142,7 @@ WATCH_CATEGORIES = set(env_list("WATCH_CATEGORIES", DEFAULT_CATEGORIES, int))
 KEYWORDS = [k.lower() for k in env_list("KEYWORDS", DEFAULT_KEYWORDS)]
 ONLY_PRIORITY = os.getenv("ONLY_PRIORITY") == "1"
 DRAFT_MODE = os.getenv("DRAFT_MODE") or "priority"
+DRAFT_DAILY_LIMIT = int(os.getenv("DRAFT_DAILY_LIMIT") or 15)
 
 
 # --- HTTP ------------------------------------------------------------------------
@@ -318,13 +334,14 @@ def research_forum(title, exclude_id=None, limit=3):
 
 
 def draft_reply(title, body, category="", topic_id=None):
-    """Draft a forum reply. Returns {"text", "sources", "queries", "model"} or None on failure.
+    """Draft a forum reply. Returns {"text", "sources", "queries", "model", ...} or None.
 
-    Busy, rate-limited, unknown or timed-out models fall through to the next model in
-    LLM_MODELS; two passes over the list at most. A rejected key stops immediately.
+    Walks providers in order (Ollama, OpenRouter, Gemini) and each provider's model list.
+    A rejected key skips that provider; busy, rate-limited, unknown or timed-out models
+    fall through to the next model. Gemini first tries Google Search grounding.
     """
-    api_key = os.getenv("LLM_API_KEY")
-    if not api_key or DRAFT_MODE == "off":
+    providers = active_providers()
+    if not providers or DRAFT_MODE == "off":
         return None
     refs = research_forum(title, exclude_id=topic_id)
     ref_xml = "".join(
@@ -333,37 +350,41 @@ def draft_reply(title, body, category="", topic_id=None):
     prompt = (f"<forum_post>\n<category>{category}</category>\n<title>{title}</title>\n"
               f"<body>{body[:6000]}</body>\n</forum_post>\n\n"
               f"<reference_threads>\n{ref_xml}</reference_threads>\n\nWrite the reply.")
-    gemini = GEMINI_HOST in LLM_BASE_URL
-    # Gemini: try with Google Search grounding first; if every model refuses it (e.g. the
-    # search quota is used up), fall back to an ungrounded draft, clearly labelled as such.
-    passes = [("grounded", 1), ("ungrounded", 1)] if gemini else [("openai", 2)]
-    for mode, rounds in passes:
-        for attempt in range(rounds):
-            for model in LLM_MODELS:
-                try:
-                    if mode == "openai":
-                        draft = _openai_compatible(model, prompt, api_key)
-                    else:
-                        draft = _gemini(model, prompt, api_key, search=(mode == "grounded"))
-                except urllib.error.HTTPError as e:
-                    print(f"⚠️ {model} ({mode}): HTTP {e.code}: {_error_summary(e)}")
-                    if e.code in (400, 401, 403):
-                        return None  # bad key or request: other models won't help
-                    if mode == "grounded" and e.code == 429:
-                        break  # search quota is per project: go straight to the ungrounded pass
-                    continue  # 404 unknown model, 429 rate limit, 5xx busy
-                except Exception as e:
-                    print(f"⚠️ {model} ({mode}): {e}")
-                    continue
-                if draft:
-                    draft["model"] = model
-                    draft["grounded"] = mode == "grounded"
-                    draft["references"] = refs
-                    print(f"✍️ Draft from {model} ({mode}): {len(draft['sources'])} sources, "
-                          f"{len(draft['queries'])} searches")
-                    return draft
-            if attempt < rounds - 1:
-                time.sleep(10)
+    for p in providers:
+        draft = _draft_with_provider(p, prompt)
+        if draft:
+            draft["references"] = refs
+            print(f"✍️ Draft from {draft['model']}: {len(draft['sources'])} web sources, {len(refs)} forum threads")
+            return draft
+    return None
+
+
+def _draft_with_provider(p, prompt):
+    api_key = os.getenv(p["key_env"])
+    # Gemini tries Google Search grounding first; it needs billing, so a 429 there means
+    # "search unavailable" and we retry the same models without it.
+    modes = ["grounded", "plain"] if p["kind"] == "gemini" else ["plain"]
+    for mode in modes:
+        for model in provider_models(p):
+            label = f"{p['name']}/{model}" + (" +search" if mode == "grounded" else "")
+            try:
+                if p["kind"] == "gemini":
+                    draft = _gemini(model, prompt, api_key, search=(mode == "grounded"))
+                else:
+                    draft = _openai_compatible(p["base"], model, prompt, api_key)
+            except urllib.error.HTTPError as e:
+                print(f"⚠️ {label}: HTTP {e.code}: {_error_summary(e)}")
+                if e.code in (401, 403):
+                    return None  # bad key: skip this provider
+                if mode == "grounded" and e.code == 429:
+                    break  # search unavailable for the project: go to the plain pass
+                continue  # 400/404 model not available, 429 quota, 5xx busy
+            except Exception as e:
+                print(f"⚠️ {label}: {e}")
+                continue
+            if draft:
+                draft.update(model=f"{p['name']}/{model}", grounded=(mode == "grounded"))
+                return draft
     return None
 
 
@@ -400,9 +421,9 @@ def _gemini(model, prompt, api_key, search=True):
     return parse_gemini(data)
 
 
-def _openai_compatible(model, prompt, api_key):
+def _openai_compatible(base, model, prompt, api_key):
     data = _post_json(
-        f"{LLM_BASE_URL}/chat/completions",
+        f"{base}/chat/completions",
         {"model": model, "messages": [{"role": "system", "content": DRAFT_SYSTEM},
                                       {"role": "user", "content": prompt}]},
         {"Authorization": f"Bearer {api_key}"},
@@ -481,7 +502,7 @@ def format_draft_message(draft, header):
             f'• <a href="{html.escape(r["url"])}">{html.escape(r["title"][:70])}</a> '
             f'<i>({html.escape(r["date"])}, {html.escape(r["author"])})</i>' for r in refs)
     if not draft.get("grounded", True):
-        msg += "\n⚠️ <i>Not web-search verified (Gemini search needs billing). Based on the forum threads above.</i>"
+        msg += "\n⚠️ <i>Not web-search verified; based on the forum threads above. Check facts before posting.</i>"
     return msg + f"\n<i>{html.escape(draft.get('model', ''))}</i>"
 
 
@@ -511,7 +532,7 @@ def fresh_state(now):
     return {
         "started_at": now.isoformat(),
         "seen": [],
-        "daily": {"date": now.strftime("%Y-%m-%d"), "alerts": 0, "priority": 0},
+        "daily": {"date": now.strftime("%Y-%m-%d"), "alerts": 0, "priority": 0, "drafts": 0},
     }
 
 
@@ -573,7 +594,7 @@ def check_forum():
     today = now.strftime("%Y-%m-%d")
     if state["daily"]["date"] != today:
         send_telegram(daily_report(state, state["daily"]["date"]))
-        state["daily"] = {"date": today, "alerts": 0, "priority": 0}
+        state["daily"] = {"date": today, "alerts": 0, "priority": 0, "drafts": 0}
 
     names = watched_categories()
     topics = fetch_latest_topics()
@@ -600,8 +621,12 @@ def check_forum():
         state["daily"]["priority"] += bool(hits)
         sent += 1
 
-        if DRAFT_MODE == "all" or (DRAFT_MODE == "priority" and hits):
+        wants_draft = DRAFT_MODE == "all" or (DRAFT_MODE == "priority" and hits)
+        if wants_draft and state["daily"].get("drafts", 0) >= DRAFT_DAILY_LIMIT:
+            print(f"ℹ️ Daily draft limit ({DRAFT_DAILY_LIMIT}) reached; alert sent without draft")
+        elif wants_draft:
             draft = draft_reply(t["title"], body, names.get(t["category_id"], ""), t["id"])
+            state["daily"]["drafts"] = state["daily"].get("drafts", 0) + 1
             if draft:
                 send_telegram(format_draft_message(draft, "✍️ <b>Draft reply</b> (review before posting):"))
         time.sleep(0.5)
@@ -612,8 +637,8 @@ def check_forum():
 
 def test_draft():
     """Draft a reply for the newest question in a watched category, to check the AI setup."""
-    if not os.getenv("LLM_API_KEY"):
-        sys.exit("LLM_API_KEY is not set")
+    if not active_providers():
+        sys.exit("No AI provider key is set (OLLAMA_API_KEY, OPENROUTER_API_KEY or LLM_API_KEY)")
     names = watched_categories()
     topics = [t for t in fetch_latest_topics()
               if t["category_id"] in names and not t.get("pinned") and t.get("archetype") == "regular"]
@@ -622,7 +647,7 @@ def test_draft():
     t = max(topics, key=lambda t: t["created_at"])
     post = fetch_json(f"{FORUM}/t/{t['id']}.json")
     body = html_to_text(post["post_stream"]["posts"][0]["cooked"])
-    print(f"🧪 Drafting for: {t['title']} (models {', '.join(LLM_MODELS)})")
+    print(f"🧪 Drafting for: {t['title']} (providers {', '.join(p['name'] for p in active_providers())})")
     draft = draft_reply(t["title"], body, names.get(t["category_id"], ""), t["id"])
     if not draft:
         sys.exit("Draft failed; see the error above")
@@ -637,9 +662,37 @@ def test_draft():
         sys.exit(1)
 
 
+def probe_models(candidates=None):
+    """Send a tiny request to each provider/model to see which ones this account can use."""
+    candidates = candidates or {}
+    for p in active_providers():
+        for model in candidates.get(p["name"]) or provider_models(p):
+            start = time.time()
+            try:
+                if p["kind"] == "gemini":
+                    _post_json(f"https://{GEMINI_HOST}/v1beta/models/{model}:generateContent",
+                               {"contents": [{"role": "user", "parts": [{"text": "Say OK"}]}]},
+                               {"x-goog-api-key": os.getenv(p["key_env"])})
+                else:
+                    _post_json(f"{p['base']}/chat/completions",
+                               {"model": model, "max_tokens": 5, "messages": [{"role": "user", "content": "Say OK"}]},
+                               {"Authorization": f"Bearer {os.getenv(p['key_env'])}"})
+                result = "OK"
+            except urllib.error.HTTPError as e:
+                result = f"HTTP {e.code}: {_error_summary(e)[:120]}"
+            except Exception as e:
+                result = f"{type(e).__name__}: {e}"[:120]
+            print(f"PROBE {p['name']:<10} {model:<45} {time.time() - start:5.1f}s  {result}")
+
+
 def main():
     if not BOT_TOKEN or not CHAT_ID:
         sys.exit("BOT_TOKEN and CHAT_ID environment variables are required")
+    if "--probe" in sys.argv:
+        extra = {"ollama": ["kimi-k2.6", "deepseek-v4.1-flash", "glm-5.3", "gpt-oss:120b", "gemma4:31b",
+                            "nemotron-3-ultra", "minimax-m2.7", "gpt-oss:20b", "glm-5.3-flash", "nemotron-3-super"]}
+        probe_models(extra)
+        return
     if "--test-draft" in sys.argv:
         test_draft()
         return

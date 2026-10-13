@@ -96,7 +96,10 @@ class Draft(unittest.TestCase):
         self.orig_sleep = tracker.time.sleep
         tracker.time.sleep = lambda s: None
         tracker.DRAFT_MODE = "priority"
+        for k in ("OLLAMA_API_KEY", "OPENROUTER_API_KEY"):
+            os.environ.pop(k, None)
         os.environ["LLM_API_KEY"] = "test-key"
+        self.gemini_models = tracker.provider_models(tracker.PROVIDERS[2])
         self.orig_research = tracker.research_forum
         self.refs = [{"title": "Rules guide", "url": "https://forum.asana.com/t/rules/1", "date": "2026-09-01",
                       "author": "lead (Forum Leader, accepted answer)", "answer": "Use a rule on field change."}]
@@ -106,7 +109,8 @@ class Draft(unittest.TestCase):
         tracker.research_forum = self.orig_research
         tracker.urllib.request.urlopen = self.orig_urlopen
         tracker.time.sleep = self.orig_sleep
-        os.environ.pop("LLM_API_KEY", None)
+        for k in ("LLM_API_KEY", "OLLAMA_API_KEY", "OPENROUTER_API_KEY"):
+            os.environ.pop(k, None)
 
     def respond(self, *results):
         results = list(results)
@@ -139,9 +143,9 @@ class Draft(unittest.TestCase):
         self.assertEqual(draft["text"], "Use a rule, it runs on triggers.")  # thought dropped, dash removed
         self.assertEqual(draft["sources"], [("asana.com", "https://redirect/1")])
         self.assertEqual(draft["queries"], ["asana rules triggers"])
-        self.assertEqual(draft["model"], tracker.LLM_MODELS[0])
+        self.assertEqual(draft["model"], f"gemini/{self.gemini_models[0]}")
         req = self.calls[0]
-        self.assertIn(f"/models/{tracker.LLM_MODELS[0]}:generateContent", req.full_url)
+        self.assertIn(f"/models/{self.gemini_models[0]}:generateContent", req.full_url)
         self.assertEqual(req.get_header("X-goog-api-key"), "test-key")
         body = json.loads(req.data)
         self.assertEqual(body["tools"], [{"google_search": {}}])
@@ -153,43 +157,54 @@ class Draft(unittest.TestCase):
         self.assertEqual(draft["references"], self.refs)
         self.assertTrue(draft["grounded"])
 
-    def test_openai_compatible_provider(self):
-        orig = tracker.LLM_BASE_URL
-        tracker.LLM_BASE_URL = "https://openrouter.ai/api/v1"
-        try:
-            self.respond({"choices": [{"message": {"content": "Try a rule."}, "finish_reason": "stop"}]})
-            draft = tracker.draft_reply("Title", "Body")
-        finally:
-            tracker.LLM_BASE_URL = orig
+    def test_ollama_first_then_openrouter_then_gemini(self):
+        os.environ["OLLAMA_API_KEY"] = "ollama-key"
+        os.environ["OPENROUTER_API_KEY"] = "or-key"
+        ollama_n = len(tracker.provider_models(tracker.PROVIDERS[0]))
+        # Ollama: bad key -> skip provider; OpenRouter: every model busy; Gemini: search refused, plain works
+        self.respond(self.http_error(401),
+                     *[self.http_error(503) for _ in tracker.provider_models(tracker.PROVIDERS[1])],
+                     self.http_error(429), self.GEMINI_OK)
+        draft = tracker.draft_reply("Title", "Body")
+        self.assertTrue(draft["model"].startswith("gemini/"))
+        self.assertFalse(draft["grounded"])
+        self.assertEqual(self.calls[0].full_url, "https://ollama.com/v1/chat/completions")
+        self.assertEqual(self.calls[0].get_header("Authorization"), "Bearer ollama-key")
+        self.assertEqual(self.calls[1].full_url, "https://openrouter.ai/api/v1/chat/completions")
+        self.assertEqual(json.loads(self.calls[1].data)["model"], tracker.provider_models(tracker.PROVIDERS[1])[0])
+        self.assertLess(ollama_n, 10)
+
+    def test_openai_compatible_success(self):
+        os.environ["OLLAMA_API_KEY"] = "ollama-key"
+        self.respond({"choices": [{"message": {"content": "Try a rule."}, "finish_reason": "stop"}]})
+        draft = tracker.draft_reply("Title", "Body")
         self.assertEqual(draft["text"], "Try a rule.")
-        req = self.calls[0]
-        self.assertEqual(req.full_url, "https://openrouter.ai/api/v1/chat/completions")
-        self.assertEqual(req.get_header("Authorization"), "Bearer test-key")
-        self.assertEqual(json.loads(req.data)["messages"][0]["role"], "system")
+        self.assertEqual(draft["model"], "ollama/" + tracker.provider_models(tracker.PROVIDERS[0])[0])
+        self.assertEqual(json.loads(self.calls[0].data)["messages"][0]["role"], "system")
 
     def test_no_key_means_no_call(self):
-        os.environ.pop("LLM_API_KEY")
+        os.environ.pop("LLM_API_KEY")  # and no Ollama/OpenRouter keys either
         self.respond()
         self.assertIsNone(tracker.draft_reply("t", "b"))
         self.assertEqual(self.calls, [])
 
-    def test_bad_key_does_not_retry(self):
-        self.respond(self.http_error(400))
+    def test_bad_key_skips_provider(self):
+        self.respond(self.http_error(403))
         self.assertIsNone(tracker.draft_reply("t", "b"))
         self.assertEqual(len(self.calls), 1)
 
     def test_busy_model_falls_through_to_next(self):
         self.respond(self.http_error(503), self.GEMINI_OK)
-        self.assertEqual(tracker.draft_reply("t", "b")["model"], tracker.LLM_MODELS[1])
-        self.assertIn(tracker.LLM_MODELS[1], self.calls[1].full_url)
+        self.assertEqual(tracker.draft_reply("t", "b")["model"], f"gemini/{self.gemini_models[1]}")
+        self.assertIn(self.gemini_models[1], self.calls[1].full_url)
 
     def test_unknown_model_and_timeout_fall_through(self):
         self.respond(self.http_error(404), TimeoutError("timed out"), self.GEMINI_OK)
         self.assertIsNotNone(tracker.draft_reply("t", "b"))
         self.assertEqual(len(self.calls), 3)
 
-    def test_gives_up_after_grounded_and_ungrounded_passes(self):
-        n = 2 * len(tracker.LLM_MODELS)  # 1 grounded round + 1 ungrounded
+    def test_gives_up_after_grounded_and_plain_passes(self):
+        n = 2 * len(self.gemini_models)  # grounded pass + plain pass
         self.respond(*[self.http_error(503) for _ in range(n)])
         self.assertIsNone(tracker.draft_reply("t", "b"))
         self.assertEqual(len(self.calls), n)

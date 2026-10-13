@@ -10,6 +10,10 @@ on:
         description: 'Send a test AI draft for the latest question (no alerts, no state change)'
         type: boolean
         default: false
+      probe_models:
+        description: 'Check which AI models each provider key can use (no alerts, no state change)'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -43,6 +47,8 @@ jobs:
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
+          OLLAMA_API_KEY: ${{ secrets.OLLAMA }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER }}
           LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
           STATE_FILE: .state/state.json
           # Optional overrides (repo Settings → Variables)
@@ -50,9 +56,11 @@ jobs:
           KEYWORDS: ${{ vars.KEYWORDS }}
           ONLY_PRIORITY: ${{ vars.ONLY_PRIORITY }}
           DRAFT_MODE: ${{ vars.DRAFT_MODE }}
-          LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}
-          LLM_MODEL: ${{ vars.LLM_MODEL }}
-        run: python tracker.py ${{ inputs.test_draft && '--test-draft' || '' }}
+          OLLAMA_MODELS: ${{ vars.OLLAMA_MODELS }}
+          OPENROUTER_MODELS: ${{ vars.OPENROUTER_MODELS }}
+          GEMINI_MODELS: ${{ vars.GEMINI_MODELS }}
+          DRAFT_DAILY_LIMIT: ${{ vars.DRAFT_DAILY_LIMIT }}
+        run: python tracker.py ${{ inputs.test_draft && '--test-draft' || '' }} ${{ inputs.probe_models && '--probe' || '' }}
 
       - name: Persist state
         if: always()
