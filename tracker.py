@@ -81,7 +81,7 @@ DEFAULT_KEYWORDS = [
 PROVIDERS = [
     {"name": "byte", "key_env": "BYTE_API_KEY", "kind": "openai",
      "base": os.getenv("BYTE_BASE_URL") or "https://bytezone.kalivomalest.workers.dev/v1",
-     "models_env": "BYTE_MODELS", "models": ""},
+     "models_env": "BYTE_MODELS", "models": "", "timeout": 150},  # slow gateway
     {"name": "ollama", "key_env": "OLLAMA_API_KEY", "kind": "openai", "base": "https://ollama.com/v1",
      "models_env": "OLLAMA_MODELS", "models": "nemotron-3-ultra,gpt-oss:120b,gemma4:31b"},
     {"name": "openrouter", "key_env": "OPENROUTER_API_KEY", "kind": "openai", "base": "https://openrouter.ai/api/v1",
@@ -465,7 +465,7 @@ def _draft_with_provider(p, prompt):
                 if p["kind"] == "gemini":
                     draft = _gemini(model, prompt, api_key, search=(mode == "grounded"))
                 else:
-                    draft = _openai_compatible(p["base"], model, prompt, api_key)
+                    draft = _openai_compatible(p["base"], model, prompt, api_key, p.get("timeout", 60))
             except urllib.error.HTTPError as e:
                 print(f"⚠️ {label}: HTTP {e.code}: {_error_summary(e)}")
                 if e.code in (401, 403):
@@ -496,11 +496,11 @@ def _error_summary(e):
         return raw[:300]
 
 
-def _post_json(url, payload, headers):
+def _post_json(url, payload, headers, timeout=60):
     req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"),
                                  headers={"Content-Type": "application/json", "User-Agent": HEADERS["User-Agent"],
                                           **headers})
-    with urllib.request.urlopen(req, timeout=60, context=ssl_ctx) as resp:
+    with urllib.request.urlopen(req, timeout=timeout, context=ssl_ctx) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
 
@@ -516,12 +516,13 @@ def _gemini(model, prompt, api_key, search=True):
     return parse_gemini(data)
 
 
-def _openai_compatible(base, model, prompt, api_key):
+def _openai_compatible(base, model, prompt, api_key, timeout=60):
     data = _post_json(
         f"{base}/chat/completions",
         {"model": model, "messages": [{"role": "system", "content": DRAFT_SYSTEM},
                                       {"role": "user", "content": prompt}]},
         {"Authorization": f"Bearer {api_key}"},
+        timeout,
     )
     return parse_draft(data)
 
