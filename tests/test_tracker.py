@@ -97,8 +97,13 @@ class Draft(unittest.TestCase):
         tracker.time.sleep = lambda s: None
         tracker.DRAFT_MODE = "priority"
         os.environ["LLM_API_KEY"] = "test-key"
+        self.orig_research = tracker.research_forum
+        self.refs = [{"title": "Rules guide", "url": "https://forum.asana.com/t/rules/1", "date": "2026-09-01",
+                      "author": "lead (Forum Leader, accepted answer)", "answer": "Use a rule on field change."}]
+        tracker.research_forum = lambda title, exclude_id=None: self.refs
 
     def tearDown(self):
+        tracker.research_forum = self.orig_research
         tracker.urllib.request.urlopen = self.orig_urlopen
         tracker.time.sleep = self.orig_sleep
         os.environ.pop("LLM_API_KEY", None)
@@ -141,7 +146,12 @@ class Draft(unittest.TestCase):
         body = json.loads(req.data)
         self.assertEqual(body["tools"], [{"google_search": {}}])
         self.assertIn("Never use em dashes", body["systemInstruction"]["parts"][0]["text"])
-        self.assertIn("<category>Ask the Community</category>", body["contents"][0]["parts"][0]["text"])
+        user_text = body["contents"][0]["parts"][0]["text"]
+        self.assertIn("<category>Ask the Community</category>", user_text)
+        self.assertIn('<thread url="https://forum.asana.com/t/rules/1"', user_text)
+        self.assertIn("Use a rule on field change.", user_text)
+        self.assertEqual(draft["references"], self.refs)
+        self.assertTrue(draft["grounded"])
 
     def test_openai_compatible_provider(self):
         orig = tracker.LLM_BASE_URL
@@ -185,14 +195,16 @@ class Draft(unittest.TestCase):
         self.assertEqual(len(self.calls), n)
 
     def test_search_quota_exhausted_falls_back_to_ungrounded(self):
-        n = len(tracker.LLM_MODELS)
-        self.respond(*[self.http_error(429) for _ in range(n)], self.GEMINI_OK)
+        self.respond(self.http_error(429), self.GEMINI_OK)  # search quota is per project: no other models tried
         draft = tracker.draft_reply("t", "b")
+        self.assertEqual(len(self.calls), 2)
         self.assertFalse(draft["grounded"])
         self.assertNotIn("tools", json.loads(self.calls[-1].data))
         self.assertIn("tools", json.loads(self.calls[0].data))
         msg = tracker.format_draft_message({**draft, "sources": []}, "H")
-        self.assertIn("Not search-verified", msg)
+        self.assertIn("Not web-search verified", msg)
+        self.assertIn('href="https://forum.asana.com/t/rules/1"', msg)
+        self.assertIn("Forum Leader, accepted answer", msg)
 
     def test_error_summary_extracts_quota_id(self):
         import io
@@ -229,6 +241,49 @@ class Style(unittest.TestCase):
         self.assertIn("a &lt; b", msg)
         self.assertEqual(msg.count("help.asana.com/s/article/rules</a>"), 1)
         self.assertIn("https://www.google.com/search?q=asana+rules", msg)
+
+
+class Research(unittest.TestCase):
+    def setUp(self):
+        self.orig = tracker.fetch_json
+        self.urls = []
+
+    def tearDown(self):
+        tracker.fetch_json = self.orig
+
+    def test_prefers_solved_and_picks_best_answer(self):
+        def fake(url):
+            self.urls.append(url)
+            if "search.json" in url:
+                return {"topics": [
+                    {"id": 9, "slug": "self", "title": "Same topic", "created_at": "2026-10-01"},
+                    {"id": 1, "slug": "open", "title": "Unsolved", "created_at": "2026-10-01", "has_accepted_answer": False},
+                    {"id": 2, "slug": "solved", "title": "Solved", "created_at": "2026-09-01", "has_accepted_answer": True},
+                ]}
+            if "/t/2.json" in url:
+                return {"post_stream": {"posts": [
+                    {"post_number": 1, "username": "op", "cooked": "<p>q</p>"},
+                    {"post_number": 2, "username": "fan", "like_count": 9, "cooked": "<p>popular</p>"},
+                    {"post_number": 3, "username": "mod", "accepted_answer": True, "user_title": "Community Moderator",
+                     "created_at": "2026-09-02T00:00:00Z", "cooked": "<p>the <b>fix</b></p>"}]}}
+            return {"post_stream": {"posts": [
+                {"post_number": 1, "username": "op", "cooked": "<p>q</p>"},
+                {"post_number": 2, "username": "lead", "user_title": "Partner - Forum Leader", "cooked": "<p>lead says</p>"},
+                {"post_number": 3, "username": "fan", "like_count": 50, "cooked": "<p>likes</p>"}]}}
+        tracker.fetch_json = fake
+        refs = tracker.research_forum("How do rules work with custom fields?", exclude_id=9)
+        self.assertEqual([r["title"] for r in refs], ["Solved", "Unsolved"])
+        self.assertEqual(refs[0]["answer"], "the fix")
+        self.assertEqual(refs[0]["author"], "mod (Community Moderator, accepted answer)")
+        self.assertEqual(refs[0]["date"], "2026-09-02")
+        self.assertEqual(refs[1]["answer"], "lead says")
+        self.assertIn("q=rules%20work%20custom%20fields", self.urls[0])
+
+    def test_search_failure_returns_nothing(self):
+        def boom(url):
+            raise OSError("down")
+        tracker.fetch_json = boom
+        self.assertEqual(tracker.research_forum("rules custom fields"), [])
 
 
 class Categories(unittest.TestCase):

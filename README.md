@@ -28,10 +28,15 @@ A failed workflow run also sends a ❌ alert.
    Run. A 🧪 draft for the latest forum question arrives on Telegram.
 
 Free-tier models are sometimes briefly overloaded (HTTP 503); the tracker then falls through to
-the next model in `LLM_MODEL`. Drafts are **grounded in live Google Search**: Gemini checks current help.asana.com, developer
-docs and recent forum threads before answering, and each draft lists the sources it used plus the
-searches it ran, so you can verify before posting. The search tool's free tier is 5,000 searches a
-month. Writing rules (in `DRAFT_SYSTEM` in `tracker.py`): English only, professional and natural,
+the next model in `LLM_MODEL`. Before drafting, the tracker **researches the forum**: it searches for related threads (solved
+ones first) and pulls the accepted answer, or a reply from Asana staff or a Forum Leader. These go
+to the model as reference material and are listed under each draft with links, so every claim can
+be checked. The model may only link URLs it was given, never ones from memory.
+
+Gemini drafts also try **Google Search grounding** (current help.asana.com and developer docs). On a
+free-tier key without billing, Google rejects the search tool, so the draft falls back to the forum
+research alone and says so ("Not web-search verified"). Enabling billing on the Google project turns
+search on; Google lists 5,000 free searches a month for Gemini 3 models. Writing rules (in `DRAFT_SYSTEM` in `tracker.py`): English only, professional and natural,
 answer first, 80 to 200 words, plain text, no filler or AI-sounding phrases, plan tier noted when it
 matters, nothing unverified. Em and en dashes are also stripped in code, in case the model slips.
 
