@@ -140,14 +140,22 @@ class Draft(unittest.TestCase):
         self.assertIsNone(tracker.draft_reply("t", "b"))
         self.assertEqual(len(self.calls), 1)
 
-    def test_rate_limit_retries_then_succeeds(self):
-        self.respond(self.http_error(429), {"choices": [{"message": {"content": "ok"}}]})
+    def test_busy_model_falls_through_to_next(self):
+        self.respond(self.http_error(503), {"choices": [{"message": {"content": "ok"}}]})
         self.assertEqual(tracker.draft_reply("t", "b"), "ok")
-        self.assertEqual(len(self.calls), 2)
+        models = [json.loads(r.data)["model"] for r in self.calls]
+        self.assertEqual(models, tracker.LLM_MODELS[:2])
 
-    def test_gives_up_after_three_failures(self):
-        self.respond(self.http_error(503), self.http_error(503), self.http_error(503))
+    def test_unknown_model_and_timeout_fall_through(self):
+        self.respond(self.http_error(404), TimeoutError("timed out"), {"choices": [{"message": {"content": "ok"}}]})
+        self.assertEqual(tracker.draft_reply("t", "b"), "ok")
+        self.assertEqual(len(self.calls), 3)
+
+    def test_gives_up_after_two_passes(self):
+        n = 2 * len(tracker.LLM_MODELS)
+        self.respond(*[self.http_error(503) for _ in range(n)])
         self.assertIsNone(tracker.draft_reply("t", "b"))
+        self.assertEqual(len(self.calls), n)
 
     def test_content_filter_and_empty(self):
         self.assertIsNone(tracker.parse_draft({"choices": [{"finish_reason": "content_filter", "message": {}}]}))

@@ -14,7 +14,8 @@ Environment:
     ONLY_PRIORITY           "1" to alert only on keyword matches (default: alert on all)
     LLM_API_KEY             optional; enables AI reply drafts (free Gemini key by default)
     LLM_BASE_URL            any OpenAI-compatible API (default: Google Gemini)
-    LLM_MODEL               default gemini-3.8-flash
+    LLM_MODEL               comma-separated fallback list
+                            (default gemini-3.8-flash,gemini-3.6-flash,gemini-3.5-flash-lite)
     DRAFT_MODE              "priority" (default), "all" or "off"
 """
 import html
@@ -62,7 +63,10 @@ DEFAULT_KEYWORDS = [
 # Any OpenAI-compatible chat API works (Gemini, OpenRouter, Groq, a self-hosted OmniRoute...).
 # Default is Gemini, whose free tier covers a handful of drafts a day.
 LLM_BASE_URL = (os.getenv("LLM_BASE_URL") or "https://generativelanguage.googleapis.com/v1beta/openai").rstrip("/")
-LLM_MODEL = os.getenv("LLM_MODEL") or "gemini-3.8-flash"
+# Tried in order: free-tier models are often briefly overloaded (HTTP 503), so fall through
+LLM_MODELS = [m.strip() for m in (os.getenv("LLM_MODEL") or
+              "gemini-3.8-flash,gemini-3.6-flash,gemini-3.5-flash-lite").split(",") if m.strip()]
+LLM_MODEL = LLM_MODELS[0]
 DRAFT_SYSTEM = (
     "You draft replies to questions on the Asana Community forum for an experienced Asana "
     "consultant. Write a helpful, accurate, friendly answer the consultant can post after review. "
@@ -199,39 +203,45 @@ def select_new_topics(topics, state, now):
 # --- AI draft (optional) --------------------------------------------------------
 
 def draft_reply(title, body):
-    """Ask an OpenAI-compatible chat API for a draft reply. Returns None on any failure."""
+    """Ask an OpenAI-compatible chat API for a draft reply. Returns None on any failure.
+
+    Busy, rate-limited, unknown or timed-out models fall through to the next model in
+    LLM_MODELS; two passes over the list at most. A rejected key stops immediately.
+    """
     api_key = os.getenv("LLM_API_KEY")
     if not api_key or DRAFT_MODE == "off":
         return None
-    payload = json.dumps({
-        "model": LLM_MODEL,
-        "messages": [
-            {"role": "system", "content": DRAFT_SYSTEM},
-            {"role": "user", "content": f"<forum_post>\n<title>{title}</title>\n<body>{body[:6000]}</body>\n"
-                                        "</forum_post>\n\nDraft the reply."},
-        ],
-    }).encode("utf-8")
-    req = urllib.request.Request(
-        f"{LLM_BASE_URL}/chat/completions",
-        data=payload,
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
-    )
-    for attempt in range(3):
-        try:
-            with urllib.request.urlopen(req, timeout=90, context=ssl_ctx) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-            break
-        except urllib.error.HTTPError as e:
-            detail = e.read().decode("utf-8", "replace")[:300]
-            print(f"⚠️ Draft API error {e.code}: {detail}")
-            if e.code != 429 and e.code < 500:
-                return None  # bad key/model/request: retrying won't help
-        except Exception as e:
-            print(f"⚠️ Draft API connection error: {e}")
-        time.sleep(5 * (attempt + 1))
-    else:
-        return None
-    return parse_draft(data)
+    messages = [
+        {"role": "system", "content": DRAFT_SYSTEM},
+        {"role": "user", "content": f"<forum_post>\n<title>{title}</title>\n<body>{body[:6000]}</body>\n"
+                                    "</forum_post>\n\nDraft the reply."},
+    ]
+    for attempt in range(2):
+        for model in LLM_MODELS:
+            req = urllib.request.Request(
+                f"{LLM_BASE_URL}/chat/completions",
+                data=json.dumps({"model": model, "messages": messages}).encode("utf-8"),
+                headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=45, context=ssl_ctx) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+            except urllib.error.HTTPError as e:
+                detail = e.read().decode("utf-8", "replace")[:300]
+                print(f"⚠️ {model}: HTTP {e.code}: {detail}")
+                if e.code in (400, 401, 403):
+                    return None  # bad key or request: other models won't help
+                continue  # 404 unknown model, 429 rate limit, 5xx busy
+            except Exception as e:
+                print(f"⚠️ {model}: {e}")
+                continue
+            draft = parse_draft(data)
+            if draft:
+                print(f"✍️ Draft from {model}")
+                return draft
+        if attempt == 0:
+            time.sleep(10)
+    return None
 
 
 def parse_draft(data):
@@ -378,13 +388,13 @@ def test_draft():
     t = max(topics, key=lambda t: t["created_at"])
     post = fetch_json(f"{FORUM}/t/{t['id']}.json")
     body = html_to_text(post["post_stream"]["posts"][0]["cooked"])
-    print(f"🧪 Drafting for: {t['title']} (model {LLM_MODEL})")
+    print(f"🧪 Drafting for: {t['title']} (models {', '.join(LLM_MODELS)})")
     draft = draft_reply(t["title"], body)
     if not draft:
         sys.exit("Draft failed; see the error above")
     url = f"{FORUM}/t/{t['slug']}/{t['id']}"
     ok = send_telegram(f"🧪 <b>Test draft</b> for <a href=\"{html.escape(url)}\">{html.escape(t['title'])}</a>"
-                       f" ({html.escape(LLM_MODEL)}):\n\n{html.escape(draft)}")
+                       f":\n\n{html.escape(draft)}")
     print(f"✅ Draft ({len(draft)} chars) {'sent to Telegram' if ok else 'generated, but Telegram send failed'}")
     if not ok:
         sys.exit(1)
