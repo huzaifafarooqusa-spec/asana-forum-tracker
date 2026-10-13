@@ -28,7 +28,14 @@ A failed workflow run also sends a ❌ alert.
    Run. A 🧪 draft for the latest forum question arrives on Telegram.
 
 Free-tier models are sometimes briefly overloaded (HTTP 503); the tracker then falls through to
-the next model in `LLM_MODEL`. Only priority questions get drafts (`DRAFT_MODE=priority`), so usage stays far inside the free
+the next model in `LLM_MODEL`. Drafts are **grounded in live Google Search**: Gemini checks current help.asana.com, developer
+docs and recent forum threads before answering, and each draft lists the sources it used plus the
+searches it ran, so you can verify before posting. The search tool's free tier is 5,000 searches a
+month. Writing rules (in `DRAFT_SYSTEM` in `tracker.py`): English only, professional and natural,
+answer first, 80 to 200 words, plain text, no filler or AI-sounding phrases, plan tier noted when it
+matters, nothing unverified. Em and en dashes are also stripped in code, in case the model slips.
+
+Only priority questions get drafts (`DRAFT_MODE=priority`), so usage stays far inside the free
 limits. If a draft fails (rate limit, outage), the alert still arrives without it. Google may use
 free-tier prompts to improve its models; forum posts are public anyway.
 
@@ -51,7 +58,7 @@ If a Telegram send fails, the topic isn't marked seen and is retried on the next
 | `LLM_API_KEY` | repo secret (optional) | drafts off |
 | `LLM_BASE_URL` | repo variable | Gemini's OpenAI-compatible API |
 | `LLM_MODEL` | repo variable, comma-separated fallback list | `gemini-3.5-flash-lite,gemini-3.8-flash,gemini-3.6-flash` |
-| `WATCH_CATEGORIES` | repo variable, comma-separated ids | `6,161,7,24,9` (Ask the Community, Getting Started, Asana In Practice, API & Developers, App Integrations) |
+| `WATCH_CATEGORIES` | repo variable, comma-separated ids | `6,161,7,24,9` (Ask the Community, Getting Started, Asana In Practice, API & Developers, App Integrations), plus all their subcategories except Platform News and Changelog |
 | `KEYWORDS` | repo variable, comma-separated | api, automation, rules, integration, zapier, webhook, odoo, shopify… (see `tracker.py`) |
 | `ONLY_PRIORITY` | repo variable | `0`; set `1` to alert only on keyword matches |
 | `DRAFT_MODE` | repo variable | `priority`; also `all` or `off` |

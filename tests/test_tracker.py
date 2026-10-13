@@ -118,16 +118,44 @@ class Draft(unittest.TestCase):
         import io
         return tracker.urllib.error.HTTPError("u", code, "err", {}, io.BytesIO(b"{}"))
 
-    def test_success_builds_openai_request(self):
-        self.respond({"choices": [{"message": {"content": "  Try a rule.  "}, "finish_reason": "stop"}]})
-        self.assertEqual(tracker.draft_reply("Title", "Body"), "Try a rule.")
+    GEMINI_OK = {"candidates": [{
+        "finishReason": "STOP",
+        "content": {"parts": [{"text": "Think first", "thought": True},
+                              {"text": "  Use a rule \u2014 it runs on triggers.  "}]},
+        "groundingMetadata": {
+            "webSearchQueries": ["asana rules triggers"],
+            "groundingChunks": [{"web": {"uri": "https://redirect/1", "title": "asana.com"}}],
+        },
+    }]}
+
+    def test_gemini_request_is_search_grounded(self):
+        self.respond(self.GEMINI_OK)
+        draft = tracker.draft_reply("Title", "Body", "Ask the Community")
+        self.assertEqual(draft["text"], "Use a rule, it runs on triggers.")  # thought dropped, dash removed
+        self.assertEqual(draft["sources"], [("asana.com", "https://redirect/1")])
+        self.assertEqual(draft["queries"], ["asana rules triggers"])
+        self.assertEqual(draft["model"], tracker.LLM_MODELS[0])
         req = self.calls[0]
-        self.assertTrue(req.full_url.endswith("/chat/completions"))
-        self.assertEqual(req.get_header("Authorization"), "Bearer test-key")
+        self.assertIn(f"/models/{tracker.LLM_MODELS[0]}:generateContent", req.full_url)
+        self.assertEqual(req.get_header("X-goog-api-key"), "test-key")
         body = json.loads(req.data)
-        self.assertEqual(body["model"], tracker.LLM_MODEL)
-        self.assertEqual(body["messages"][0]["role"], "system")
-        self.assertIn("<title>Title</title>", body["messages"][1]["content"])
+        self.assertEqual(body["tools"], [{"google_search": {}}])
+        self.assertIn("Never use em dashes", body["systemInstruction"]["parts"][0]["text"])
+        self.assertIn("<category>Ask the Community</category>", body["contents"][0]["parts"][0]["text"])
+
+    def test_openai_compatible_provider(self):
+        orig = tracker.LLM_BASE_URL
+        tracker.LLM_BASE_URL = "https://openrouter.ai/api/v1"
+        try:
+            self.respond({"choices": [{"message": {"content": "Try a rule."}, "finish_reason": "stop"}]})
+            draft = tracker.draft_reply("Title", "Body")
+        finally:
+            tracker.LLM_BASE_URL = orig
+        self.assertEqual(draft["text"], "Try a rule.")
+        req = self.calls[0]
+        self.assertEqual(req.full_url, "https://openrouter.ai/api/v1/chat/completions")
+        self.assertEqual(req.get_header("Authorization"), "Bearer test-key")
+        self.assertEqual(json.loads(req.data)["messages"][0]["role"], "system")
 
     def test_no_key_means_no_call(self):
         os.environ.pop("LLM_API_KEY")
@@ -136,19 +164,18 @@ class Draft(unittest.TestCase):
         self.assertEqual(self.calls, [])
 
     def test_bad_key_does_not_retry(self):
-        self.respond(self.http_error(401))
+        self.respond(self.http_error(400))
         self.assertIsNone(tracker.draft_reply("t", "b"))
         self.assertEqual(len(self.calls), 1)
 
     def test_busy_model_falls_through_to_next(self):
-        self.respond(self.http_error(503), {"choices": [{"message": {"content": "ok"}}]})
-        self.assertEqual(tracker.draft_reply("t", "b"), "ok")
-        models = [json.loads(r.data)["model"] for r in self.calls]
-        self.assertEqual(models, tracker.LLM_MODELS[:2])
+        self.respond(self.http_error(503), self.GEMINI_OK)
+        self.assertEqual(tracker.draft_reply("t", "b")["model"], tracker.LLM_MODELS[1])
+        self.assertIn(tracker.LLM_MODELS[1], self.calls[1].full_url)
 
     def test_unknown_model_and_timeout_fall_through(self):
-        self.respond(self.http_error(404), TimeoutError("timed out"), {"choices": [{"message": {"content": "ok"}}]})
-        self.assertEqual(tracker.draft_reply("t", "b"), "ok")
+        self.respond(self.http_error(404), TimeoutError("timed out"), self.GEMINI_OK)
+        self.assertIsNotNone(tracker.draft_reply("t", "b"))
         self.assertEqual(len(self.calls), 3)
 
     def test_gives_up_after_two_passes(self):
@@ -157,9 +184,66 @@ class Draft(unittest.TestCase):
         self.assertIsNone(tracker.draft_reply("t", "b"))
         self.assertEqual(len(self.calls), n)
 
-    def test_content_filter_and_empty(self):
+    def test_declined_and_empty(self):
+        self.assertIsNone(tracker.parse_gemini({"candidates": [{"finishReason": "SAFETY"}]}))
+        self.assertIsNone(tracker.parse_gemini({"promptFeedback": {"blockReason": "OTHER"}}))
         self.assertIsNone(tracker.parse_draft({"choices": [{"finish_reason": "content_filter", "message": {}}]}))
         self.assertIsNone(tracker.parse_draft({"choices": []}))
+
+
+class Style(unittest.TestCase):
+    def test_clean_draft(self):
+        self.assertEqual(tracker.clean_draft("Rules \u2014 not forms \u2013 work."), "Rules, not forms, work.")
+        self.assertEqual(tracker.clean_draft("Takes 3\u20135 minutes"), "Takes 3-5 minutes")
+        self.assertEqual(tracker.clean_draft("Done \u2014."), "Done.")
+        self.assertEqual(tracker.clean_draft("## Steps\n**Open** the project"), "Steps\nOpen the project")
+
+    def test_format_message_resolves_and_dedupes_sources(self):
+        orig = tracker.resolve_url
+        tracker.resolve_url = lambda u: "https://help.asana.com/s/article/rules" if "1" in u or "2" in u else u
+        try:
+            msg = tracker.format_draft_message(
+                {"text": "a < b", "model": "m",
+                 "sources": [("asana.com", "https://r/1"), ("asana.com", "https://r/2")],
+                 "queries": ["asana rules"]}, "HEAD")
+        finally:
+            tracker.resolve_url = orig
+        self.assertIn("a &lt; b", msg)
+        self.assertEqual(msg.count("help.asana.com/s/article/rules</a>"), 1)
+        self.assertIn("https://www.google.com/search?q=asana+rules", msg)
+
+
+class Categories(unittest.TestCase):
+    def setUp(self):
+        self.orig = tracker.fetch_json
+
+    def tearDown(self):
+        tracker.fetch_json = self.orig
+
+    def test_subcategories_included_announcements_excluded(self):
+        tracker.fetch_json = lambda url: {"category_list": {"categories": [{"id": 160, "name": "Asana Community",
+            "subcategory_list": [
+                {"id": 24, "name": "API & Developers", "subcategory_list": [
+                    {"id": 97, "name": "Platform News"}, {"id": 150, "name": "App Components"}]},
+                {"id": 20, "name": "Product Ideas", "subcategory_list": [{"id": 78, "name": "In Progress"}]},
+            ]}]}}
+        names = tracker.watched_categories()
+        self.assertEqual(names[150], "API & Developers › App Components")
+        self.assertNotIn(97, names)
+        self.assertNotIn(78, names)
+        self.assertNotIn(160, names)
+
+    def test_static_fallback(self):
+        def boom(url):
+            raise OSError("offline")
+        tracker.fetch_json = boom
+        names = tracker.watched_categories()
+        self.assertIn(218, names)
+        self.assertIn(219, names)
+
+    def test_subcategory_topic_selected(self):
+        got = tracker.select_new_topics([topic(1, 5, category=218)], state(), NOW, {6, 218})
+        self.assertEqual([t["id"] for t in got], [1])
 
 
 class CheckForumFlow(unittest.TestCase):
