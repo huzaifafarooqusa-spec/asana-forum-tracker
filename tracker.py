@@ -75,14 +75,16 @@ DEFAULT_KEYWORDS = [
 # AI providers for drafts, tried in order; any provider whose key is set takes part. Each has
 # a model fallback list: a busy, rate-limited or quota-exhausted model moves on to the next
 # model, then the next provider, so one free tier running dry never stops drafts.
+# Defaults are the strongest models a free account could use in a --probe on 2026-10-13
+# (Ollama's kimi/deepseek/glm/minimax cloud models need paid credits).
 PROVIDERS = [
     {"name": "ollama", "key_env": "OLLAMA_API_KEY", "kind": "openai", "base": "https://ollama.com/v1",
-     "models_env": "OLLAMA_MODELS", "models": "gpt-oss:120b,gemma4:31b,gpt-oss:20b"},
+     "models_env": "OLLAMA_MODELS", "models": "nemotron-3-ultra,gpt-oss:120b,gemma4:31b"},
     {"name": "openrouter", "key_env": "OPENROUTER_API_KEY", "kind": "openai", "base": "https://openrouter.ai/api/v1",
      "models_env": "OPENROUTER_MODELS",
-     "models": "nvidia/nemotron-3-ultra-550b-a55b:free,google/gemma-4-31b-it:free,nvidia/nemotron-3-super-120b-a12b:free"},
+     "models": "nvidia/nemotron-3-ultra-550b-a55b:free,nvidia/nemotron-3-super-120b-a12b:free,google/gemma-4-31b-it:free"},
     {"name": "gemini", "key_env": "LLM_API_KEY", "kind": "gemini", "base": None,
-     "models_env": "GEMINI_MODELS", "models": "gemini-3.5-flash-lite,gemini-3.8-flash,gemini-3.6-flash"},
+     "models_env": "GEMINI_MODELS", "models": "gemini-3.6-flash,gemini-3.5-flash-lite"},
 ]
 
 
