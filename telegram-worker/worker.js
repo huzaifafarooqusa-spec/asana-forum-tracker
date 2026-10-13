@@ -7,6 +7,8 @@ const BOTS = {
   scalper: { repo: `${OWNER}/mexc-safe-scalper`, workflow: "scalper.yml", label: "MEXC scalper" },
 };
 const HISTORY_LIMIT = 12;
+// Some Cloudflare-fronted gateways reject non-browser clients (error 1010)
+const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36";
 const SYSTEM_PROMPT =
   "You are a concise, helpful assistant in Telegram for Huzaifa, an Asana and operations consultant " +
   "(KlarityOps). Answer clearly and briefly. Plain text only, no markdown tables. If asked about the bots, " +
@@ -94,7 +96,7 @@ async function chat(env, chatId, text) {
   history.push({ role: "user", content: text });
   const res = await fetch(`${env.LLM_BASE_URL}/chat/completions`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${env.LLM_API_KEY}` },
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${env.LLM_API_KEY}`, "User-Agent": UA },
     body: JSON.stringify({ model, messages: [{ role: "system", content: SYSTEM_PROMPT }, ...history] }),
   });
   if (!res.ok) return send(env, chatId, `❌ Chat API error ${res.status}: ${(await res.text()).slice(0, 300)}`);
@@ -106,7 +108,7 @@ async function chat(env, chatId, text) {
 }
 
 async function listModels(env) {
-  const res = await fetch(`${env.LLM_BASE_URL}/models`, { headers: { Authorization: `Bearer ${env.LLM_API_KEY}` } });
+  const res = await fetch(`${env.LLM_BASE_URL}/models`, { headers: { Authorization: `Bearer ${env.LLM_API_KEY}`, "User-Agent": UA } });
   if (!res.ok) return `❌ Models API error ${res.status}`;
   const ids = ((await res.json()).data || []).map((m) => m.id);
   return `${ids.length} models (current: ${(await currentModel(env)) || "none"}):\n` + ids.slice(0, 80).join("\n");

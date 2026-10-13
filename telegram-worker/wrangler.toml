@@ -5,7 +5,7 @@ compatibility_date = "2026-09-01"
 [vars]
 # Any OpenAI-compatible chat API; switch provider by changing this and the LLM_API_KEY secret.
 LLM_BASE_URL = "https://bytezone.kalivomalest.workers.dev/v1"
-DEFAULT_MODEL = ""
+DEFAULT_MODEL = "claude-sonnet-5-5"
 
 # Secrets (set with `npx wrangler secret put NAME`, never committed):
 #   BOT_TOKEN     Telegram bot token (same bot as the alerts)
@@ -15,4 +15,4 @@ DEFAULT_MODEL = ""
 
 [[kv_namespaces]]
 binding = "KV"
-id = "REPLACE_WITH_KV_ID"
+id = "df1a7d48442841889a9006ae2db14e9f"
