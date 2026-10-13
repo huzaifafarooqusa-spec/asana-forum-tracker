@@ -178,11 +178,29 @@ class Draft(unittest.TestCase):
         self.assertIsNotNone(tracker.draft_reply("t", "b"))
         self.assertEqual(len(self.calls), 3)
 
-    def test_gives_up_after_two_passes(self):
-        n = 2 * len(tracker.LLM_MODELS)
+    def test_gives_up_after_grounded_and_ungrounded_passes(self):
+        n = 2 * len(tracker.LLM_MODELS)  # 1 grounded round + 1 ungrounded
         self.respond(*[self.http_error(503) for _ in range(n)])
         self.assertIsNone(tracker.draft_reply("t", "b"))
         self.assertEqual(len(self.calls), n)
+
+    def test_search_quota_exhausted_falls_back_to_ungrounded(self):
+        n = len(tracker.LLM_MODELS)
+        self.respond(*[self.http_error(429) for _ in range(n)], self.GEMINI_OK)
+        draft = tracker.draft_reply("t", "b")
+        self.assertFalse(draft["grounded"])
+        self.assertNotIn("tools", json.loads(self.calls[-1].data))
+        self.assertIn("tools", json.loads(self.calls[0].data))
+        msg = tracker.format_draft_message({**draft, "sources": []}, "H")
+        self.assertIn("Not search-verified", msg)
+
+    def test_error_summary_extracts_quota_id(self):
+        import io
+        body = json.dumps({"error": {"code": 429, "message": "You exceeded your current quota. For more information x",
+                                     "details": [{"violations": [{"quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier"}]}]}})
+        e = tracker.urllib.error.HTTPError("u", 429, "err", {}, io.BytesIO(body.encode()))
+        self.assertEqual(tracker._error_summary(e),
+                         "You exceeded your current quota [quota: GenerateRequestsPerDayPerProjectPerModel-FreeTier]")
 
     def test_declined_and_empty(self):
         self.assertIsNone(tracker.parse_gemini({"candidates": [{"finishReason": "SAFETY"}]}))

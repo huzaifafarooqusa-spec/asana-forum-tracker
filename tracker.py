@@ -274,29 +274,49 @@ def draft_reply(title, body, category=""):
         return None
     prompt = (f"<forum_post>\n<category>{category}</category>\n<title>{title}</title>\n"
               f"<body>{body[:6000]}</body>\n</forum_post>\n\nWrite the reply.")
-    grounded = GEMINI_HOST in LLM_BASE_URL
-    for attempt in range(2):
-        for model in LLM_MODELS:
-            try:
-                draft = (_gemini_grounded(model, prompt, api_key) if grounded
-                         else _openai_compatible(model, prompt, api_key))
-            except urllib.error.HTTPError as e:
-                detail = e.read().decode("utf-8", "replace")[:300]
-                print(f"⚠️ {model}: HTTP {e.code}: {detail}")
-                if e.code in (400, 401, 403):
-                    return None  # bad key or request: other models won't help
-                continue  # 404 unknown model, 429 rate limit, 5xx busy
-            except Exception as e:
-                print(f"⚠️ {model}: {e}")
-                continue
-            if draft:
-                draft["model"] = model
-                print(f"✍️ Draft from {model}: {len(draft['sources'])} sources, "
-                      f"{len(draft['queries'])} searches")
-                return draft
-        if attempt == 0:
-            time.sleep(10)
+    gemini = GEMINI_HOST in LLM_BASE_URL
+    # Gemini: try with Google Search grounding first; if every model refuses it (e.g. the
+    # search quota is used up), fall back to an ungrounded draft, clearly labelled as such.
+    passes = [("grounded", 1), ("ungrounded", 1)] if gemini else [("openai", 2)]
+    for mode, rounds in passes:
+        for attempt in range(rounds):
+            for model in LLM_MODELS:
+                try:
+                    if mode == "openai":
+                        draft = _openai_compatible(model, prompt, api_key)
+                    else:
+                        draft = _gemini(model, prompt, api_key, search=(mode == "grounded"))
+                except urllib.error.HTTPError as e:
+                    print(f"⚠️ {model} ({mode}): HTTP {e.code}: {_error_summary(e)}")
+                    if e.code in (400, 401, 403):
+                        return None  # bad key or request: other models won't help
+                    continue  # 404 unknown model, 429 quota/rate limit, 5xx busy
+                except Exception as e:
+                    print(f"⚠️ {model} ({mode}): {e}")
+                    continue
+                if draft:
+                    draft["model"] = model
+                    draft["grounded"] = mode == "grounded"
+                    print(f"✍️ Draft from {model} ({mode}): {len(draft['sources'])} sources, "
+                          f"{len(draft['queries'])} searches")
+                    return draft
+            if attempt < rounds - 1:
+                time.sleep(10)
     return None
+
+
+def _error_summary(e):
+    """Error message plus quota ids, which say exactly which limit a 429 hit."""
+    raw = e.read().decode("utf-8", "replace")
+    try:
+        data = json.loads(raw)
+        err = (data[0] if isinstance(data, list) else data).get("error", {})
+        quotas = [v.get("quotaId") or v.get("quotaMetric") for d in err.get("details") or []
+                  for v in d.get("violations") or [] if isinstance(v, dict)]
+        msg = err.get("message", "").split(". For more information")[0]
+        return msg + (f" [quota: {', '.join(q for q in quotas if q)}]" if any(quotas) else "")
+    except Exception:
+        return raw[:300]
 
 
 def _post_json(url, payload, headers):
@@ -306,16 +326,15 @@ def _post_json(url, payload, headers):
         return json.loads(resp.read().decode("utf-8"))
 
 
-def _gemini_grounded(model, prompt, api_key):
-    data = _post_json(
-        f"https://{GEMINI_HOST}/v1beta/models/{model}:generateContent",
-        {
-            "systemInstruction": {"parts": [{"text": DRAFT_SYSTEM}]},
-            "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-            "tools": [{"google_search": {}}],
-        },
-        {"x-goog-api-key": api_key},
-    )
+def _gemini(model, prompt, api_key, search=True):
+    payload = {
+        "systemInstruction": {"parts": [{"text": DRAFT_SYSTEM}]},
+        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+    }
+    if search:
+        payload["tools"] = [{"google_search": {}}]
+    data = _post_json(f"https://{GEMINI_HOST}/v1beta/models/{model}:generateContent", payload,
+                      {"x-goog-api-key": api_key})
     return parse_gemini(data)
 
 
@@ -394,6 +413,8 @@ def format_draft_message(draft, header):
             f'<a href="https://www.google.com/search?q={urllib.parse.quote_plus(q)}">{html.escape(q)}</a>'
             for q in draft["queries"][:4])
         msg += f"\n🔍 <i>Searched:</i> {searches}"
+    if not draft.get("grounded", True):
+        msg += "\n⚠️ <i>Not search-verified (search quota unavailable). Check facts before posting.</i>"
     return msg + f"\n<i>{html.escape(draft.get('model', ''))}</i>"
 
 
