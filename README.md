@@ -24,7 +24,8 @@ A failed workflow run also sends a ❌ alert.
    ```bash
    gh secret set LLM_API_KEY -R huzaifafarooqusa-spec/asana-forum-tracker
    ```
-3. Done. The next 🔥 priority question arrives with a ✍️ draft.
+3. Test it: Actions → Asana Forum Monitor → **Run workflow** → tick *Send a test AI draft* →
+   Run. A 🧪 draft for the latest forum question arrives on Telegram.
 
 Only priority questions get drafts (`DRAFT_MODE=priority`), so usage stays far inside the free
 limits. If a draft fails (rate limit, outage), the alert still arrives without it. Google may use

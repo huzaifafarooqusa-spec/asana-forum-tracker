@@ -5,6 +5,11 @@ on:
     # Every 5 minutes (GitHub may delay or skip scheduled runs under load)
     - cron: '*/5 * * * *'
   workflow_dispatch: # Allows manual trigger from GitHub UI
+    inputs:
+      test_draft:
+        description: 'Send a test AI draft for the latest question (no alerts, no state change)'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -47,7 +52,7 @@ jobs:
           DRAFT_MODE: ${{ vars.DRAFT_MODE }}
           LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}
           LLM_MODEL: ${{ vars.LLM_MODEL }}
-        run: python tracker.py
+        run: python tracker.py ${{ inputs.test_draft && '--test-draft' || '' }}
 
       - name: Persist state
         if: always()

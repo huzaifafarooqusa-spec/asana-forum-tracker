@@ -4,6 +4,7 @@ AI-drafted reply.
 
     python tracker.py           # one check (GitHub Actions / cron)
     python tracker.py --loop    # check every 60s forever
+    python tracker.py --test-draft  # draft a reply to the latest question and send it (no state change)
 
 Environment:
     BOT_TOKEN, CHAT_ID      Telegram bot credentials (required)
@@ -366,9 +367,35 @@ def check_forum():
     print(f"ℹ️ Check complete. {sent} new topics notified ({len(topics)} scanned).")
 
 
+def test_draft():
+    """Draft a reply for the newest question in a watched category, to check the AI setup."""
+    if not os.getenv("LLM_API_KEY"):
+        sys.exit("LLM_API_KEY is not set")
+    topics = [t for t in fetch_latest_topics()
+              if t["category_id"] in WATCH_CATEGORIES and not t.get("pinned") and t.get("archetype") == "regular"]
+    if not topics:
+        sys.exit("No topics found in watched categories")
+    t = max(topics, key=lambda t: t["created_at"])
+    post = fetch_json(f"{FORUM}/t/{t['id']}.json")
+    body = html_to_text(post["post_stream"]["posts"][0]["cooked"])
+    print(f"🧪 Drafting for: {t['title']} (model {LLM_MODEL})")
+    draft = draft_reply(t["title"], body)
+    if not draft:
+        sys.exit("Draft failed; see the error above")
+    url = f"{FORUM}/t/{t['slug']}/{t['id']}"
+    ok = send_telegram(f"🧪 <b>Test draft</b> for <a href=\"{html.escape(url)}\">{html.escape(t['title'])}</a>"
+                       f" ({html.escape(LLM_MODEL)}):\n\n{html.escape(draft)}")
+    print(f"✅ Draft ({len(draft)} chars) {'sent to Telegram' if ok else 'generated, but Telegram send failed'}")
+    if not ok:
+        sys.exit(1)
+
+
 def main():
     if not BOT_TOKEN or not CHAT_ID:
         sys.exit("BOT_TOKEN and CHAT_ID environment variables are required")
+    if "--test-draft" in sys.argv:
+        test_draft()
+        return
     if "--loop" not in sys.argv:
         check_forum()
         return
