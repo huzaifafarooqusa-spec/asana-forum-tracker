@@ -685,8 +685,8 @@ def check_forum():
     print(f"ℹ️ Check complete. {sent} new topics notified ({len(topics)} scanned).")
 
 
-def test_draft():
-    """Draft a reply for the newest question in a watched category, to check the AI setup."""
+def test_draft(count=1):
+    """Draft replies for the newest questions in watched categories, to check draft quality."""
     if not active_providers():
         sys.exit("No AI provider key is set (OLLAMA_API_KEY, OPENROUTER_API_KEY or LLM_API_KEY)")
     names = watched_categories()
@@ -694,22 +694,27 @@ def test_draft():
               if t["category_id"] in names and not t.get("pinned") and t.get("archetype") == "regular"]
     if not topics:
         sys.exit("No topics found in watched categories")
-    t = max(topics, key=lambda t: t["created_at"])
-    post = fetch_json(f"{FORUM}/t/{t['id']}.json")
-    body = html_to_text(post["post_stream"]["posts"][0]["cooked"])
-    print(f"🧪 Drafting for: {t['title']} (providers {', '.join(p['name'] for p in active_providers())})")
-    draft = draft_reply(t["title"], body, names.get(t["category_id"], ""), t["id"])
-    if not draft:
-        sys.exit("Draft failed; see the error above")
-    url = f"{FORUM}/t/{t['slug']}/{t['id']}"
-    header = f'🧪 <b>Test draft</b> for <a href="{html.escape(url)}">{html.escape(t["title"])}</a>:'
-    ok = send_telegram(format_draft_message(draft, header))
-    dashes = len(re.findall("[\u2013\u2014]", draft["text"]))
-    print(f"✅ Draft: {len(draft['text'].split())} words, {dashes} dashes, {len(draft['docs'])} official docs, "
-          f"{len(draft['references'])} forum threads; "
-          f"{'sent to Telegram' if ok else 'Telegram send failed'}")
-    if not ok:
-        sys.exit(1)
+    failed = 0
+    for i, t in enumerate(sorted(topics, key=lambda t: t["created_at"], reverse=True)[:count], 1):
+        post = fetch_json(f"{FORUM}/t/{t['id']}.json")
+        body = html_to_text(post["post_stream"]["posts"][0]["cooked"])
+        print(f"🧪 [{i}/{count}] Drafting for: {t['title']}")
+        draft = draft_reply(t["title"], body, names.get(t["category_id"], ""), t["id"])
+        if not draft:
+            print("   ❌ Draft failed; see the error above")
+            failed += 1
+            continue
+        url = f"{FORUM}/t/{t['slug']}/{t['id']}"
+        header = (f'🧪 <b>Test draft {i}/{count}</b> for <a href="{html.escape(url)}">{html.escape(t["title"])}</a>'
+                  f' <i>({t["created_at"][:10]})</i>:')
+        ok = send_telegram(format_draft_message(draft, header))
+        dashes = len(re.findall("[\u2013\u2014]", draft["text"]))
+        print(f"   ✅ {len(draft['text'].split())} words, {dashes} dashes, {len(draft['docs'])} official docs, "
+              f"{len(draft['references'])} forum threads; {'sent' if ok else 'Telegram send failed'}")
+        failed += not ok
+        time.sleep(1)
+    if failed:
+        sys.exit(f"{failed} of {count} test drafts failed")
 
 
 def probe_models(candidates=None):
@@ -744,7 +749,9 @@ def main():
         probe_models(extra)
         return
     if "--test-draft" in sys.argv:
-        test_draft()
+        i = sys.argv.index("--test-draft")
+        count = int(sys.argv[i + 1]) if i + 1 < len(sys.argv) and sys.argv[i + 1].isdigit() else 1
+        test_draft(count)
         return
     if "--loop" not in sys.argv:
         check_forum()
