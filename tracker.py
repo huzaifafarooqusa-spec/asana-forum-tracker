@@ -1,6 +1,6 @@
 """Asana Community forum monitor: sends a Telegram alert for every new question in the
-watched categories, flags the ones matching your keywords, and (optionally) attaches a
-Claude-drafted reply.
+watched categories, flags the ones matching your keywords, and (optionally) attaches an
+AI-drafted reply.
 
     python tracker.py           # one check (GitHub Actions / cron)
     python tracker.py --loop    # check every 60s forever
@@ -11,9 +11,10 @@ Environment:
     WATCH_CATEGORIES        comma-separated Discourse category ids (default: see below)
     KEYWORDS                comma-separated priority keywords (default: see below)
     ONLY_PRIORITY           "1" to alert only on keyword matches (default: alert on all)
-    ANTHROPIC_API_KEY       optional; enables Claude reply drafts
+    LLM_API_KEY             optional; enables AI reply drafts (free Gemini key by default)
+    LLM_BASE_URL            any OpenAI-compatible API (default: Google Gemini)
+    LLM_MODEL               default gemini-3.8-flash
     DRAFT_MODE              "priority" (default), "all" or "off"
-    CLAUDE_MODEL            default claude-opus-5-5
 """
 import html
 import json
@@ -22,6 +23,7 @@ import re
 import ssl
 import sys
 import time
+import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
@@ -56,7 +58,10 @@ DEFAULT_KEYWORDS = [
     "consultant", "help me set up", "best way",
 ]
 
-CLAUDE_MODEL = os.getenv("CLAUDE_MODEL") or "claude-opus-5-5"
+# Any OpenAI-compatible chat API works (Gemini, OpenRouter, Groq, a self-hosted OmniRoute...).
+# Default is Gemini, whose free tier covers a handful of drafts a day.
+LLM_BASE_URL = (os.getenv("LLM_BASE_URL") or "https://generativelanguage.googleapis.com/v1beta/openai").rstrip("/")
+LLM_MODEL = os.getenv("LLM_MODEL") or "gemini-3.8-flash"
 DRAFT_SYSTEM = (
     "You draft replies to questions on the Asana Community forum for an experienced Asana "
     "consultant. Write a helpful, accurate, friendly answer the consultant can post after review. "
@@ -190,42 +195,51 @@ def select_new_topics(topics, state, now):
     return fresh
 
 
-# --- Claude draft (optional) -----------------------------------------------------
+# --- AI draft (optional) --------------------------------------------------------
 
 def draft_reply(title, body):
-    if not os.getenv("ANTHROPIC_API_KEY") or DRAFT_MODE == "off":
+    """Ask an OpenAI-compatible chat API for a draft reply. Returns None on any failure."""
+    api_key = os.getenv("LLM_API_KEY")
+    if not api_key or DRAFT_MODE == "off":
         return None
-    try:
-        import anthropic
-    except ImportError:
-        print("⚠️ anthropic package not installed; skipping draft")
+    payload = json.dumps({
+        "model": LLM_MODEL,
+        "messages": [
+            {"role": "system", "content": DRAFT_SYSTEM},
+            {"role": "user", "content": f"<forum_post>\n<title>{title}</title>\n<body>{body[:6000]}</body>\n"
+                                        "</forum_post>\n\nDraft the reply."},
+        ],
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        f"{LLM_BASE_URL}/chat/completions",
+        data=payload,
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
+    )
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(req, timeout=90, context=ssl_ctx) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            break
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode("utf-8", "replace")[:300]
+            print(f"⚠️ Draft API error {e.code}: {detail}")
+            if e.code != 429 and e.code < 500:
+                return None  # bad key/model/request: retrying won't help
+        except Exception as e:
+            print(f"⚠️ Draft API connection error: {e}")
+        time.sleep(5 * (attempt + 1))
+    else:
         return None
-    client = anthropic.Anthropic()
-    try:
-        response = client.beta.messages.create(
-            model=CLAUDE_MODEL,
-            max_tokens=4000,
-            betas=["server-side-fallback-2026-07-01"],
-            fallbacks="default",
-            output_config={"effort": "medium"},
-            system=DRAFT_SYSTEM,
-            messages=[{
-                "role": "user",
-                "content": f"<forum_post>\n<title>{title}</title>\n<body>{body[:6000]}</body>\n</forum_post>\n\n"
-                           "Draft the reply.",
-            }],
-        )
-    except anthropic.APIStatusError as e:
-        print(f"⚠️ Claude API error {e.status_code}: {e.message}")
+    return parse_draft(data)
+
+
+def parse_draft(data):
+    choices = data.get("choices") or []
+    if not choices or choices[0].get("finish_reason") == "content_filter":
+        print("⚠️ Draft declined or empty")
         return None
-    except anthropic.APIConnectionError as e:
-        print(f"⚠️ Claude connection error: {e}")
-        return None
-    if response.stop_reason == "refusal":
-        print("⚠️ Claude declined to draft this one")
-        return None
-    text = "".join(b.text for b in response.content if b.type == "text").strip()
-    return text or None
+    text = (choices[0].get("message") or {}).get("content") or ""
+    return text.strip()[:3500] or None
 
 
 # --- State -----------------------------------------------------------------------

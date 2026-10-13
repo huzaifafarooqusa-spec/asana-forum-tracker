@@ -75,6 +75,85 @@ class Html(unittest.TestCase):
         self.assertIn("Priority", msg)
 
 
+class FakeResponse:
+    def __init__(self, body):
+        self.body = json.dumps(body).encode()
+
+    def read(self):
+        return self.body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+class Draft(unittest.TestCase):
+    def setUp(self):
+        self.calls = []
+        self.orig_urlopen = tracker.urllib.request.urlopen
+        self.orig_sleep = tracker.time.sleep
+        tracker.time.sleep = lambda s: None
+        tracker.DRAFT_MODE = "priority"
+        os.environ["LLM_API_KEY"] = "test-key"
+
+    def tearDown(self):
+        tracker.urllib.request.urlopen = self.orig_urlopen
+        tracker.time.sleep = self.orig_sleep
+        os.environ.pop("LLM_API_KEY", None)
+
+    def respond(self, *results):
+        results = list(results)
+
+        def fake(req, timeout=None, context=None):
+            self.calls.append(req)
+            r = results.pop(0)
+            if isinstance(r, Exception):
+                raise r
+            return FakeResponse(r)
+        tracker.urllib.request.urlopen = fake
+
+    def http_error(self, code):
+        import io
+        return tracker.urllib.error.HTTPError("u", code, "err", {}, io.BytesIO(b"{}"))
+
+    def test_success_builds_openai_request(self):
+        self.respond({"choices": [{"message": {"content": "  Try a rule.  "}, "finish_reason": "stop"}]})
+        self.assertEqual(tracker.draft_reply("Title", "Body"), "Try a rule.")
+        req = self.calls[0]
+        self.assertTrue(req.full_url.endswith("/chat/completions"))
+        self.assertEqual(req.get_header("Authorization"), "Bearer test-key")
+        body = json.loads(req.data)
+        self.assertEqual(body["model"], tracker.LLM_MODEL)
+        self.assertEqual(body["messages"][0]["role"], "system")
+        self.assertIn("<title>Title</title>", body["messages"][1]["content"])
+
+    def test_no_key_means_no_call(self):
+        os.environ.pop("LLM_API_KEY")
+        self.respond()
+        self.assertIsNone(tracker.draft_reply("t", "b"))
+        self.assertEqual(self.calls, [])
+
+    def test_bad_key_does_not_retry(self):
+        self.respond(self.http_error(401))
+        self.assertIsNone(tracker.draft_reply("t", "b"))
+        self.assertEqual(len(self.calls), 1)
+
+    def test_rate_limit_retries_then_succeeds(self):
+        self.respond(self.http_error(429), {"choices": [{"message": {"content": "ok"}}]})
+        self.assertEqual(tracker.draft_reply("t", "b"), "ok")
+        self.assertEqual(len(self.calls), 2)
+
+    def test_gives_up_after_three_failures(self):
+        self.respond(self.http_error(503), self.http_error(503), self.http_error(503))
+        self.assertIsNone(tracker.draft_reply("t", "b"))
+
+    def test_content_filter_and_empty(self):
+        self.assertIsNone(tracker.parse_draft({"choices": [{"finish_reason": "content_filter", "message": {}}]}))
+        self.assertIsNone(tracker.parse_draft({"choices": []}))
+
+
 class CheckForumFlow(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

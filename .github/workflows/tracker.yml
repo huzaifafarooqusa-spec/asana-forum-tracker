@@ -34,23 +34,19 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install Claude SDK (only if drafts are enabled)
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: |
-          if [ -n "$ANTHROPIC_API_KEY" ]; then pip install -q anthropic; fi
-
       - name: Run Tracker
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
           STATE_FILE: .state/state.json
           # Optional overrides (repo Settings → Variables)
           WATCH_CATEGORIES: ${{ vars.WATCH_CATEGORIES }}
           KEYWORDS: ${{ vars.KEYWORDS }}
           ONLY_PRIORITY: ${{ vars.ONLY_PRIORITY }}
           DRAFT_MODE: ${{ vars.DRAFT_MODE }}
+          LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}
+          LLM_MODEL: ${{ vars.LLM_MODEL }}
         run: python tracker.py
 
       - name: Persist state

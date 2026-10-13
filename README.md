@@ -1,18 +1,38 @@
 # Asana Forum Tracker
 
 Sends a Telegram alert for every new question on the [Asana Community forum](https://forum.asana.com)
-in the categories you watch. Questions matching your keywords are flagged 🔥 and, if you add an
-Anthropic API key, come with a Claude-drafted reply you can review and post.
+in the categories you watch. Questions matching your keywords are flagged 🔥 and, if you add a free
+Gemini API key, come with an AI-drafted reply you can review and post.
 
 ## What each alert has
 
 - Title, category, tags and the first ~280 characters of the question
 - 🔥 priority flag with the matched keywords: any keyword in the title, or 2+ different ones in the body
 - Reply count ("No replies yet, be first!")
-- Optional ✍️ draft reply from Claude
+- Optional ✍️ AI draft reply (🔥 priority questions only, by default)
 
 A daily summary is sent at the first run after 00:00 UTC, so silence means something is wrong.
 A failed workflow run also sends a ❌ alert.
+
+## Free AI drafts (Gemini)
+
+1. Open [Google AI Studio](https://aistudio.google.com/apikey), sign in with a Google account
+   and click **Create API key**. The free tier needs no card.
+2. Add it as a repo secret named `LLM_API_KEY`: Settings → Secrets and variables → Actions →
+   New repository secret. Or from a terminal, which prompts for the value so it never lands in
+   your shell history:
+   ```bash
+   gh secret set LLM_API_KEY -R huzaifafarooqusa-spec/asana-forum-tracker
+   ```
+3. Done. The next 🔥 priority question arrives with a ✍️ draft.
+
+Only priority questions get drafts (`DRAFT_MODE=priority`), so usage stays far inside the free
+limits. If a draft fails (rate limit, outage), the alert still arrives without it. Google may use
+free-tier prompts to improve its models; forum posts are public anyway.
+
+To use another provider, set the `LLM_BASE_URL` and `LLM_MODEL` repo variables to any
+OpenAI-compatible API, e.g. OpenRouter (`https://openrouter.ai/api/v1`) or Groq
+(`https://api.groq.com/openai/v1`), and put that provider's key in `LLM_API_KEY`.
 
 ## How "new" is decided
 
@@ -26,12 +46,13 @@ If a Telegram send fails, the topic isn't marked seen and is retried on the next
 | Setting | Where | Default |
 |---|---|---|
 | `BOT_TOKEN`, `CHAT_ID` | repo secrets (required) | none |
-| `ANTHROPIC_API_KEY` | repo secret (optional) | drafts off |
+| `LLM_API_KEY` | repo secret (optional) | drafts off |
+| `LLM_BASE_URL` | repo variable | Gemini's OpenAI-compatible API |
+| `LLM_MODEL` | repo variable | `gemini-3.8-flash` |
 | `WATCH_CATEGORIES` | repo variable, comma-separated ids | `6,161,7,24,9` (Ask the Community, Getting Started, Asana In Practice, API & Developers, App Integrations) |
 | `KEYWORDS` | repo variable, comma-separated | api, automation, rules, integration, zapier, webhook, odoo, shopify… (see `tracker.py`) |
 | `ONLY_PRIORITY` | repo variable | `0`; set `1` to alert only on keyword matches |
 | `DRAFT_MODE` | repo variable | `priority`; also `all` or `off` |
-| `CLAUDE_MODEL` | env | `claude-opus-5-5` |
 
 Other category ids: 20 Product Ideas, 61 Critical Bugs, 18 Product Announcements.
 
