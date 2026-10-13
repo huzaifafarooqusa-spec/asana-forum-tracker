@@ -498,7 +498,8 @@ def _error_summary(e):
 
 def _post_json(url, payload, headers):
     req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"),
-                                 headers={"Content-Type": "application/json", **headers})
+                                 headers={"Content-Type": "application/json", "User-Agent": HEADERS["User-Agent"],
+                                          **headers})
     with urllib.request.urlopen(req, timeout=60, context=ssl_ctx) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
