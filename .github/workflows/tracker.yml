@@ -51,7 +51,7 @@ jobs:
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
-          BYTE_API_KEY: ${{ secrets.BYTE }}
+          BYTE_API_KEY: ${{ secrets.LLMAA }}
           OLLAMA_API_KEY: ${{ secrets.OLLAMA }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER }}
           LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
