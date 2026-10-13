@@ -50,7 +50,7 @@ If a Telegram send fails, the topic isn't marked seen and is retried on the next
 | `BOT_TOKEN`, `CHAT_ID` | repo secrets (required) | none |
 | `LLM_API_KEY` | repo secret (optional) | drafts off |
 | `LLM_BASE_URL` | repo variable | Gemini's OpenAI-compatible API |
-| `LLM_MODEL` | repo variable, comma-separated fallback list | `gemini-3.8-flash,gemini-3.6-flash,gemini-3.5-flash-lite` |
+| `LLM_MODEL` | repo variable, comma-separated fallback list | `gemini-3.5-flash-lite,gemini-3.8-flash,gemini-3.6-flash` |
 | `WATCH_CATEGORIES` | repo variable, comma-separated ids | `6,161,7,24,9` (Ask the Community, Getting Started, Asana In Practice, API & Developers, App Integrations) |
 | `KEYWORDS` | repo variable, comma-separated | api, automation, rules, integration, zapier, webhook, odoo, shopify… (see `tracker.py`) |
 | `ONLY_PRIORITY` | repo variable | `0`; set `1` to alert only on keyword matches |

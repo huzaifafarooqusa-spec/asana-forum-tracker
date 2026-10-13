@@ -15,7 +15,7 @@ Environment:
     LLM_API_KEY             optional; enables AI reply drafts (free Gemini key by default)
     LLM_BASE_URL            any OpenAI-compatible API (default: Google Gemini)
     LLM_MODEL               comma-separated fallback list
-                            (default gemini-3.8-flash,gemini-3.6-flash,gemini-3.5-flash-lite)
+                            (default gemini-3.5-flash-lite,gemini-3.8-flash,gemini-3.6-flash)
     DRAFT_MODE              "priority" (default), "all" or "off"
 """
 import html
@@ -61,11 +61,12 @@ DEFAULT_KEYWORDS = [
 ]
 
 # Any OpenAI-compatible chat API works (Gemini, OpenRouter, Groq, a self-hosted OmniRoute...).
-# Default is Gemini, whose free tier covers a handful of drafts a day.
+# Default is Gemini, whose free tier covers a handful of drafts a day. Flash-Lite first:
+# fastest and least often overloaded; the bigger Flash models are fallbacks.
 LLM_BASE_URL = (os.getenv("LLM_BASE_URL") or "https://generativelanguage.googleapis.com/v1beta/openai").rstrip("/")
 # Tried in order: free-tier models are often briefly overloaded (HTTP 503), so fall through
 LLM_MODELS = [m.strip() for m in (os.getenv("LLM_MODEL") or
-              "gemini-3.8-flash,gemini-3.6-flash,gemini-3.5-flash-lite").split(",") if m.strip()]
+              "gemini-3.5-flash-lite,gemini-3.8-flash,gemini-3.6-flash").split(",") if m.strip()]
 LLM_MODEL = LLM_MODELS[0]
 DRAFT_SYSTEM = (
     "You draft replies to questions on the Asana Community forum for an experienced Asana "
