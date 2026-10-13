@@ -715,7 +715,12 @@ def check_forum():
             continue
 
         print(f"🔍 New topic{' (priority)' if hits else ''}: {t['title']}")
-        if not send_telegram(build_alert(t, body, hits, names), preview=False):
+        wants_draft = DRAFT_MODE == "all" or (DRAFT_MODE == "priority" and hits)
+        will_draft = wants_draft and active_providers() and state["daily"].get("drafts", 0) < DRAFT_DAILY_LIMIT
+        alert = build_alert(t, body, hits, names)
+        if will_draft:
+            alert += "\n\n✍️ <i>Draft reply coming in 1-3 minutes…</i>"
+        if not send_telegram(alert, preview=False):
             continue  # not marked seen, so it retries next run
 
         state["seen"].append(str(t["id"]))
@@ -723,7 +728,6 @@ def check_forum():
         state["daily"]["priority"] += bool(hits)
         sent += 1
 
-        wants_draft = DRAFT_MODE == "all" or (DRAFT_MODE == "priority" and hits)
         if wants_draft and state["daily"].get("drafts", 0) >= DRAFT_DAILY_LIMIT:
             print(f"ℹ️ Daily draft limit ({DRAFT_DAILY_LIMIT}) reached; alert sent without draft")
         elif wants_draft:
