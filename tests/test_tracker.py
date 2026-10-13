@@ -104,9 +104,13 @@ class Draft(unittest.TestCase):
         self.refs = [{"title": "Rules guide", "url": "https://forum.asana.com/t/rules/1", "date": "2026-09-01",
                       "author": "lead (Forum Leader, accepted answer)", "answer": "Use a rule on field change."}]
         tracker.research_forum = lambda title, exclude_id=None: self.refs
+        self.orig_docs = tracker.research_docs
+        self.docs = [{"title": "Rules", "url": "https://help.asana.com/s/article/rules", "text": "Rules automate work."}]
+        tracker.research_docs = lambda title: self.docs
 
     def tearDown(self):
         tracker.research_forum = self.orig_research
+        tracker.research_docs = self.orig_docs
         tracker.urllib.request.urlopen = self.orig_urlopen
         tracker.time.sleep = self.orig_sleep
         for k in ("LLM_API_KEY", "OLLAMA_API_KEY", "OPENROUTER_API_KEY"):
@@ -155,6 +159,8 @@ class Draft(unittest.TestCase):
         self.assertIn('<thread url="https://forum.asana.com/t/rules/1"', user_text)
         self.assertIn("Use a rule on field change.", user_text)
         self.assertEqual(draft["references"], self.refs)
+        self.assertIn('<doc url="https://help.asana.com/s/article/rules">', user_text)
+        self.assertEqual(draft["docs"], self.docs)
         self.assertTrue(draft["grounded"])
 
     def test_ollama_first_then_openrouter_then_gemini(self):
@@ -216,8 +222,11 @@ class Draft(unittest.TestCase):
         self.assertFalse(draft["grounded"])
         self.assertNotIn("tools", json.loads(self.calls[-1].data))
         self.assertIn("tools", json.loads(self.calls[0].data))
-        msg = tracker.format_draft_message({**draft, "sources": []}, "H")
+        msg = tracker.format_draft_message({**draft, "sources": [], "docs": []}, "H")
         self.assertIn("Not web-search verified", msg)
+        with_docs = tracker.format_draft_message({**draft, "sources": []}, "H")
+        self.assertNotIn("Not web-search verified", with_docs)
+        self.assertIn("Official docs checked", with_docs)
         self.assertIn('href="https://forum.asana.com/t/rules/1"', msg)
         self.assertIn("Forum Leader, accepted answer", msg)
 
@@ -256,6 +265,45 @@ class Style(unittest.TestCase):
         self.assertIn("a &lt; b", msg)
         self.assertEqual(msg.count("help.asana.com/s/article/rules</a>"), 1)
         self.assertIn("https://www.google.com/search?q=asana+rules", msg)
+
+
+class Docs(unittest.TestCase):
+    def setUp(self):
+        self.orig_post = tracker._post_json
+        os.environ["FIRECRAWL_API_KEY"] = "fc-test"
+
+    def tearDown(self):
+        tracker._post_json = self.orig_post
+        os.environ.pop("FIRECRAWL_API_KEY", None)
+
+    def test_search_restricted_to_official_domains(self):
+        calls = []
+
+        def fake(url, payload, headers):
+            calls.append((url, payload, headers))
+            return {"success": True, "data": {"web": [
+                {"url": "https://help.asana.com/a", "title": "A", "markdown": "Steps\n\n\n\nhere"},
+                {"url": "https://help.asana.com/b", "title": "B", "markdown": ""}]}}
+        tracker._post_json = fake
+        docs = tracker.research_docs("Rules not firing")
+        self.assertEqual(docs, [{"title": "A", "url": "https://help.asana.com/a", "text": "Steps\n\nhere"}])
+        url, payload, headers = calls[0]
+        self.assertEqual(url, "https://api.firecrawl.dev/v2/search")
+        self.assertEqual(payload["includeDomains"], tracker.DOCS_DOMAINS)
+        self.assertEqual(payload["limit"], 2)
+        self.assertEqual(headers["Authorization"], "Bearer fc-test")
+
+    def test_flat_list_response_and_failures(self):
+        tracker._post_json = lambda *a: {"data": [{"metadata": {"sourceURL": "https://asana.com/x", "title": "X"},
+                                                   "markdown": "text"}]}
+        self.assertEqual(tracker.research_docs("q")[0]["url"], "https://asana.com/x")
+
+        def boom(*a):
+            raise OSError("down")
+        tracker._post_json = boom
+        self.assertEqual(tracker.research_docs("q"), [])
+        os.environ.pop("FIRECRAWL_API_KEY")
+        self.assertEqual(tracker.research_docs("q"), [])
 
 
 class Research(unittest.TestCase):

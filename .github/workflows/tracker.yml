@@ -50,6 +50,7 @@ jobs:
           OLLAMA_API_KEY: ${{ secrets.OLLAMA }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER }}
           LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          FIRECRAWL_API_KEY: ${{ secrets.FIRECRAWL }}
           STATE_FILE: .state/state.json
           # Optional overrides (repo Settings → Variables)
           WATCH_CATEGORIES: ${{ vars.WATCH_CATEGORIES }}

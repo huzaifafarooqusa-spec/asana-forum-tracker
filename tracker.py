@@ -19,6 +19,7 @@ Environment:
                             comma-separated model fallback lists (defaults below)
     DRAFT_MODE              "all" (default), "priority" or "off"
     DRAFT_DAILY_LIMIT       max drafts per UTC day, protects free quotas (default 15)
+    FIRECRAWL_API_KEY       optional; checks drafts against official Asana docs (~4 credits/draft)
 """
 import html
 import json
@@ -101,9 +102,9 @@ DRAFT_SYSTEM = """You write reply drafts for the official Asana Community Forum 
 behalf of an experienced Asana consultant. A person reviews each draft, but it must be ready to post.
 
 Accuracy comes first:
-- Check the facts before answering. Use the reference threads provided (accepted answers and \
-replies from Asana staff or Forum Leaders are the most reliable) and the search tool when it is \
-available (help.asana.com, developers.asana.com, asana.com). Asana changes often, so prefer the \
+- Check the facts before answering. The official docs provided (help.asana.com, \
+developers.asana.com, asana.com) are the most authoritative source; then the reference threads \
+(accepted answers and replies from Asana staff or Forum Leaders are the most reliable). Asana changes often, so prefer the \
 newest information and ignore references that are clearly outdated.
 - Only describe features, menus and settings you have confirmed. Use the exact names shown in Asana.
 - When it matters, say which plan is needed (Personal, Starter, Advanced, Enterprise, Enterprise+).
@@ -124,7 +125,7 @@ no "I hope this helps".
 - Avoid filler and AI-sounding words such as delve, seamless, leverage, robust, streamline, \
 game-changer, "it's worth noting", certainly, absolutely, "in today's fast-paced world".
 - Do not mention AI, searching, or that this is a draft. No sales pitch or self-promotion.
-- Only include a URL if it appears in the reference threads or your search results. Never write a \
+- Only include a URL if it appears in the official docs, reference threads or your search results. Never write a \
 URL from memory. If one of them directly answers the question, end with one line such as \
 "Asana's guide on this: <URL>" or "This thread covers it: <URL>".
 
@@ -335,6 +336,43 @@ def research_forum(title, exclude_id=None, limit=3):
     return refs
 
 
+DOCS_DOMAINS = ["help.asana.com", "developers.asana.com", "asana.com"]
+
+
+def research_docs(title, limit=2):
+    """Official Asana pages relevant to the question, via Firecrawl search + scrape.
+
+    Returns [{"title", "url", "text"}]; empty without FIRECRAWL_API_KEY or on any error.
+    """
+    api_key = os.getenv("FIRECRAWL_API_KEY")
+    if not api_key:
+        return []
+    try:
+        data = _post_json("https://api.firecrawl.dev/v2/search", {
+            "query": title,
+            "limit": limit,
+            "includeDomains": DOCS_DOMAINS,
+            "scrapeOptions": {"formats": ["markdown"], "onlyMainContent": True},
+        }, {"Authorization": f"Bearer {api_key}"})
+    except urllib.error.HTTPError as e:
+        print(f"⚠️ Firecrawl: HTTP {e.code}: {e.read().decode('utf-8', 'replace')[:200]}")
+        return []
+    except Exception as e:
+        print(f"⚠️ Firecrawl: {e}")
+        return []
+    results = data.get("data") or []
+    if isinstance(results, dict):  # grouped by source type
+        results = results.get("web") or []
+    docs = []
+    for r in results:
+        url = r.get("url") or (r.get("metadata") or {}).get("sourceURL")
+        text = re.sub(r"\n{3,}", "\n\n", r.get("markdown") or r.get("description") or "").strip()
+        if url and text:
+            docs.append({"title": r.get("title") or (r.get("metadata") or {}).get("title") or url,
+                         "url": url, "text": text[:2500]})
+    return docs
+
+
 def draft_reply(title, body, category="", topic_id=None):
     """Draft a forum reply. Returns {"text", "sources", "queries", "model", ...} or None.
 
@@ -346,17 +384,21 @@ def draft_reply(title, body, category="", topic_id=None):
     if not providers or DRAFT_MODE == "off":
         return None
     refs = research_forum(title, exclude_id=topic_id)
+    docs = research_docs(title)
+    docs_xml = "".join(f"<doc url=\"{d['url']}\">\n<title>{d['title']}</title>\n{d['text']}\n</doc>\n" for d in docs)
     ref_xml = "".join(
         f"<thread url=\"{r['url']}\" date=\"{r['date']}\" answered_by=\"{r['author']}\">\n"
         f"<title>{r['title']}</title>\n<answer>{r['answer']}</answer>\n</thread>\n" for r in refs)
     prompt = (f"<forum_post>\n<category>{category}</category>\n<title>{title}</title>\n"
               f"<body>{body[:6000]}</body>\n</forum_post>\n\n"
+              f"<official_docs>\n{docs_xml}</official_docs>\n\n"
               f"<reference_threads>\n{ref_xml}</reference_threads>\n\nWrite the reply.")
     for p in providers:
         draft = _draft_with_provider(p, prompt)
         if draft:
             draft["references"] = refs
-            print(f"✍️ Draft from {draft['model']}: {len(draft['sources'])} web sources, {len(refs)} forum threads")
+            draft["docs"] = docs
+            print(f"✍️ Draft from {draft['model']}: {len(docs)} official docs, {len(refs)} forum threads")
             return draft
     return None
 
@@ -498,12 +540,16 @@ def format_draft_message(draft, header):
             f'<a href="https://www.google.com/search?q={urllib.parse.quote_plus(q)}">{html.escape(q)}</a>'
             for q in draft["queries"][:4])
         msg += f"\n🔍 <i>Searched:</i> {searches}"
+    docs = draft.get("docs") or []
+    if docs:
+        msg += "\n\n📘 <b>Official docs checked</b>\n" + "\n".join(
+            f'• <a href="{html.escape(d["url"])}">{html.escape(d["title"][:70])}</a>' for d in docs)
     refs = draft.get("references") or []
     if refs:
         msg += "\n\n📚 <b>Related forum threads used</b>\n" + "\n".join(
             f'• <a href="{html.escape(r["url"])}">{html.escape(r["title"][:70])}</a> '
             f'<i>({html.escape(r["date"])}, {html.escape(r["author"])})</i>' for r in refs)
-    if not draft.get("grounded", True):
+    if not draft.get("grounded", True) and not docs:
         msg += "\n⚠️ <i>Not web-search verified; based on the forum threads above. Check facts before posting.</i>"
     return msg + f"\n<i>{html.escape(draft.get('model', ''))}</i>"
 
@@ -659,7 +705,7 @@ def test_draft():
     header = f'🧪 <b>Test draft</b> for <a href="{html.escape(url)}">{html.escape(t["title"])}</a>:'
     ok = send_telegram(format_draft_message(draft, header))
     dashes = len(re.findall("[\u2013\u2014]", draft["text"]))
-    print(f"✅ Draft: {len(draft['text'].split())} words, {dashes} dashes, {len(draft['sources'])} web sources, "
+    print(f"✅ Draft: {len(draft['text'].split())} words, {dashes} dashes, {len(draft['docs'])} official docs, "
           f"{len(draft['references'])} forum threads; "
           f"{'sent to Telegram' if ok else 'Telegram send failed'}")
     if not ok:
