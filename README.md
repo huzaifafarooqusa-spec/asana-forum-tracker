@@ -63,12 +63,11 @@ If a Telegram send fails, the topic isn't marked seen and is retried on the next
 | `LLM_API_KEY` | repo secret (optional) | drafts off |
 | `LLM_BASE_URL` | repo variable | Gemini's OpenAI-compatible API |
 | `LLM_MODEL` | repo variable, comma-separated fallback list | `gemini-3.5-flash-lite,gemini-3.8-flash,gemini-3.6-flash` |
-| `WATCH_CATEGORIES` | repo variable, comma-separated ids | `6,161,7,24,9` (Ask the Community, Getting Started, Asana In Practice, API & Developers, App Integrations), plus all their subcategories except Platform News and Changelog |
+| `WATCH_CATEGORIES` | repo variable, comma-separated ids | `6` (Ask the Community). Other ids: 161 Getting Started, 7 Asana In Practice, 24 API & Developers, 9 App Integrations, 20 Product Ideas; subcategories are included automatically |
 | `KEYWORDS` | repo variable, comma-separated | api, automation, rules, integration, zapier, webhook, odoo, shopify… (see `tracker.py`) |
 | `ONLY_PRIORITY` | repo variable | `0`; set `1` to alert only on keyword matches |
-| `DRAFT_MODE` | repo variable | `priority`; also `all` or `off` |
+| `DRAFT_MODE` | repo variable | `all` (a draft for every post); also `priority` or `off` |
 
-Other category ids: 20 Product Ideas, 61 Critical Bugs, 18 Product Announcements.
 
 ## Running
 

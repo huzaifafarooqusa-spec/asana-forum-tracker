@@ -17,7 +17,7 @@ Environment:
     LLM_API_KEY             AI drafts via Google Gemini (last)
     OLLAMA_MODELS, OPENROUTER_MODELS, GEMINI_MODELS
                             comma-separated model fallback lists (defaults below)
-    DRAFT_MODE              "priority" (default), "all" or "off"
+    DRAFT_MODE              "all" (default), "priority" or "off"
     DRAFT_DAILY_LIMIT       max drafts per UTC day, protects free quotas (default 15)
 """
 import html
@@ -55,7 +55,7 @@ CATEGORY_NAMES = {
     61: "Critical Bugs",
     20: "Product Ideas",
 }
-DEFAULT_CATEGORIES = [6, 161, 7, 24, 9]
+DEFAULT_CATEGORIES = [6]  # Ask the Community
 # Subcategories of watched categories are watched too, except Asana's announcement-only ones
 SUBCATEGORY_EXCLUDE = {97, 204}  # Platform News, Changelog
 # Fallback if categories.json can't be fetched
@@ -143,7 +143,7 @@ def env_list(name, default, cast=str):
 WATCH_CATEGORIES = set(env_list("WATCH_CATEGORIES", DEFAULT_CATEGORIES, int))
 KEYWORDS = [k.lower() for k in env_list("KEYWORDS", DEFAULT_KEYWORDS)]
 ONLY_PRIORITY = os.getenv("ONLY_PRIORITY") == "1"
-DRAFT_MODE = os.getenv("DRAFT_MODE") or "priority"
+DRAFT_MODE = os.getenv("DRAFT_MODE") or "all"
 DRAFT_DAILY_LIMIT = int(os.getenv("DRAFT_DAILY_LIMIT") or 15)
 
 
@@ -570,18 +570,20 @@ def daily_report(state, date):
 # --- Main ------------------------------------------------------------------------
 
 def fetch_latest_topics():
-    topics = []
-    for page in range(MAX_PAGES):
-        data = fetch_json(f"{FORUM}/latest.json?no_definitions=true&page={page}")
-        batch = data.get("topic_list", {}).get("topics", [])
-        topics.extend(batch)
-        # Stop once a page's most recent activity is older than a day; nothing newer behind it
-        if not batch or not data["topic_list"].get("more_topics_url"):
-            break
-        oldest_bump = min(parse_ts(t["bumped_at"]) for t in batch)
-        if oldest_bump < datetime.now(timezone.utc) - timedelta(days=1):
-            break
-    return topics
+    """Latest topics from each watched category's own feed (includes its subcategories)."""
+    topics = {}
+    for cid in sorted(WATCH_CATEGORIES):
+        for page in range(MAX_PAGES):
+            data = fetch_json(f"{FORUM}/c/{cid}.json?no_definitions=true&page={page}")
+            batch = data.get("topic_list", {}).get("topics", [])
+            topics.update((t["id"], t) for t in batch)
+            # Stop once a page's most recent activity is older than a day; nothing newer behind it
+            if not batch or not data["topic_list"].get("more_topics_url"):
+                break
+            oldest_bump = min(parse_ts(t["bumped_at"]) for t in batch)
+            if oldest_bump < datetime.now(timezone.utc) - timedelta(days=1):
+                break
+    return list(topics.values())
 
 
 def check_forum():

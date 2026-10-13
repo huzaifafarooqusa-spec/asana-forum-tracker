@@ -308,6 +308,16 @@ class Categories(unittest.TestCase):
     def tearDown(self):
         tracker.fetch_json = self.orig
 
+    def test_default_is_ask_the_community_only(self):
+        self.assertEqual(tracker.WATCH_CATEGORIES, {6})
+        self.assertEqual(tracker.DRAFT_MODE if os.getenv("DRAFT_MODE") else "all", "all")
+
+    def test_fetch_uses_category_feed(self):
+        urls = []
+        tracker.fetch_json = lambda url: urls.append(url) or {"topic_list": {"topics": []}}
+        tracker.fetch_latest_topics()
+        self.assertEqual(urls, [f"{tracker.FORUM}/c/6.json?no_definitions=true&page=0"])
+
     def test_subcategories_included_announcements_excluded(self):
         tracker.fetch_json = lambda url: {"category_list": {"categories": [{"id": 160, "name": "Asana Community",
             "subcategory_list": [
@@ -315,7 +325,12 @@ class Categories(unittest.TestCase):
                     {"id": 97, "name": "Platform News"}, {"id": 150, "name": "App Components"}]},
                 {"id": 20, "name": "Product Ideas", "subcategory_list": [{"id": 78, "name": "In Progress"}]},
             ]}]}}
-        names = tracker.watched_categories()
+        orig = tracker.WATCH_CATEGORIES
+        tracker.WATCH_CATEGORIES = {24}
+        try:
+            names = tracker.watched_categories()
+        finally:
+            tracker.WATCH_CATEGORIES = orig
         self.assertEqual(names[150], "API & Developers › App Components")
         self.assertNotIn(97, names)
         self.assertNotIn(78, names)
@@ -325,7 +340,12 @@ class Categories(unittest.TestCase):
         def boom(url):
             raise OSError("offline")
         tracker.fetch_json = boom
-        names = tracker.watched_categories()
+        orig = tracker.WATCH_CATEGORIES
+        tracker.WATCH_CATEGORIES = {6, 7, 9}
+        try:
+            names = tracker.watched_categories()
+        finally:
+            tracker.WATCH_CATEGORIES = orig
         self.assertIn(218, names)
         self.assertIn(219, names)
 
