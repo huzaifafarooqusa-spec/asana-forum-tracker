@@ -1,0 +1,18 @@
+name = "klarity-telegram-bot"
+main = "worker.js"
+compatibility_date = "2026-09-01"
+
+[vars]
+# Any OpenAI-compatible chat API; switch provider by changing this and the LLM_API_KEY secret.
+LLM_BASE_URL = "https://bytezone.kalivomalest.workers.dev/v1"
+DEFAULT_MODEL = ""
+
+# Secrets (set with `npx wrangler secret put NAME`, never committed):
+#   BOT_TOKEN     Telegram bot token (same bot as the alerts)
+#   CHAT_ID       your Telegram chat id; the bot ignores everyone else
+#   LLM_API_KEY   key for LLM_BASE_URL
+#   GITHUB_TOKEN  fine-grained token with Actions read/write on both repos (the cron-job.org one)
+
+[[kv_namespaces]]
+binding = "KV"
+id = "REPLACE_WITH_KV_ID"

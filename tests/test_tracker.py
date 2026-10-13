@@ -9,6 +9,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import tracker  # noqa: E402
 
+PROV = {p["name"]: p for p in tracker.PROVIDERS}
+
 NOW = datetime(2026, 10, 12, 21, 0, tzinfo=timezone.utc)
 
 
@@ -99,7 +101,7 @@ class Draft(unittest.TestCase):
         for k in ("OLLAMA_API_KEY", "OPENROUTER_API_KEY"):
             os.environ.pop(k, None)
         os.environ["LLM_API_KEY"] = "test-key"
-        self.gemini_models = tracker.provider_models(tracker.PROVIDERS[2])
+        self.gemini_models = tracker.provider_models(PROV["gemini"])
         self.orig_research = tracker.research_forum
         self.refs = [{"title": "Rules guide", "url": "https://forum.asana.com/t/rules/1", "date": "2026-09-01",
                       "author": "lead (Forum Leader, accepted answer)", "answer": "Use a rule on field change."}]
@@ -166,10 +168,10 @@ class Draft(unittest.TestCase):
     def test_ollama_first_then_openrouter_then_gemini(self):
         os.environ["OLLAMA_API_KEY"] = "ollama-key"
         os.environ["OPENROUTER_API_KEY"] = "or-key"
-        ollama_n = len(tracker.provider_models(tracker.PROVIDERS[0]))
+        ollama_n = len(tracker.provider_models(PROV["ollama"]))
         # Ollama: bad key -> skip provider; OpenRouter: every model busy; Gemini: search refused, plain works
         self.respond(self.http_error(401),
-                     *[self.http_error(503) for _ in tracker.provider_models(tracker.PROVIDERS[1])],
+                     *[self.http_error(503) for _ in tracker.provider_models(PROV["openrouter"])],
                      self.http_error(429), self.GEMINI_OK)
         draft = tracker.draft_reply("Title", "Body")
         self.assertTrue(draft["model"].startswith("gemini/"))
@@ -177,7 +179,7 @@ class Draft(unittest.TestCase):
         self.assertEqual(self.calls[0].full_url, "https://ollama.com/v1/chat/completions")
         self.assertEqual(self.calls[0].get_header("Authorization"), "Bearer ollama-key")
         self.assertEqual(self.calls[1].full_url, "https://openrouter.ai/api/v1/chat/completions")
-        self.assertEqual(json.loads(self.calls[1].data)["model"], tracker.provider_models(tracker.PROVIDERS[1])[0])
+        self.assertEqual(json.loads(self.calls[1].data)["model"], tracker.provider_models(PROV["openrouter"])[0])
         self.assertLess(ollama_n, 10)
 
     def test_openai_compatible_success(self):
@@ -185,8 +187,23 @@ class Draft(unittest.TestCase):
         self.respond({"choices": [{"message": {"content": "Try a rule."}, "finish_reason": "stop"}]})
         draft = tracker.draft_reply("Title", "Body")
         self.assertEqual(draft["text"], "Try a rule.")
-        self.assertEqual(draft["model"], "ollama/" + tracker.provider_models(tracker.PROVIDERS[0])[0])
+        self.assertEqual(draft["model"], "ollama/" + tracker.provider_models(PROV["ollama"])[0])
         self.assertEqual(json.loads(self.calls[0].data)["messages"][0]["role"], "system")
+
+    def test_asker_info_in_prompt(self):
+        self.respond(self.GEMINI_OK)
+        tracker.draft_reply("Title", "Body", "Ask the Community", 1, "anna", True)
+        text = json.loads(self.calls[0].data)["contents"][0]["parts"][0]["text"]
+        self.assertIn('<asker username="anna" new_to_forum="yes"/>', text)
+
+    def test_byte_provider_needs_key_and_models(self):
+        os.environ["BYTE_API_KEY"] = "k"
+        try:
+            self.assertNotIn("byte", [p["name"] for p in tracker.active_providers()])  # no models set
+            os.environ["BYTE_MODELS"] = "some-model"
+            self.assertEqual(tracker.active_providers()[0]["name"], "byte")
+        finally:
+            os.environ.pop("BYTE_API_KEY"); os.environ.pop("BYTE_MODELS", None)
 
     def test_no_key_means_no_call(self):
         os.environ.pop("LLM_API_KEY")  # and no Ollama/OpenRouter keys either

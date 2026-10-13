@@ -51,6 +51,7 @@ jobs:
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
+          BYTE_API_KEY: ${{ secrets.BYTE }}
           OLLAMA_API_KEY: ${{ secrets.OLLAMA }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER }}
           LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
@@ -61,6 +62,7 @@ jobs:
           KEYWORDS: ${{ vars.KEYWORDS }}
           ONLY_PRIORITY: ${{ vars.ONLY_PRIORITY }}
           DRAFT_MODE: ${{ vars.DRAFT_MODE }}
+          BYTE_MODELS: ${{ vars.BYTE_MODELS }}
           OLLAMA_MODELS: ${{ vars.OLLAMA_MODELS }}
           OPENROUTER_MODELS: ${{ vars.OPENROUTER_MODELS }}
           GEMINI_MODELS: ${{ vars.GEMINI_MODELS }}
